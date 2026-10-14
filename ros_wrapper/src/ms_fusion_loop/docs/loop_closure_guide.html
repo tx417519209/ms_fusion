@@ -1,0 +1,2474 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ms_fusion_loop 回环实现指南</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --surface: #ffffff;
+    --surface2: #f4f6f9;
+    --border: #e2e8f0;
+    --text: #1a2332;
+    --muted: #64748b;
+    --accent: #2563eb;
+    --accent2: #0f766e;
+    --warn: #b45309;
+    --ok: #047857;
+    --code-bg: #f8fafc;
+    --shadow: 0 1px 3px rgba(15,23,42,.06), 0 4px 16px rgba(15,23,42,.04);
+    --radius: 12px;
+    --font: "IBM Plex Sans", "Noto Sans SC", "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", "JetBrains Mono", ui-monospace, monospace;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.65;
+  }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    min-height: 100vh;
+    width: 100%;
+  }
+
+  nav {
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+    padding: 1.5rem 1rem 2rem;
+    background: #fafbfc;
+    border-right: 1px solid var(--border);
+  }
+
+  nav .brand {
+    font-size: 0.95rem;
+    font-weight: 700;
+    letter-spacing: .02em;
+    margin-bottom: .25rem;
+    color: var(--text);
+  }
+  nav .brand-sub {
+    color: var(--muted);
+    font-size: .75rem;
+    margin-bottom: 1.25rem;
+  }
+
+  nav a {
+    display: block;
+    color: var(--muted);
+    padding: .35rem .6rem;
+    border-radius: 6px;
+    font-size: .85rem;
+    margin-bottom: 2px;
+  }
+  nav a:hover { background: var(--surface2); color: var(--text); text-decoration: none; }
+  nav a.sub { padding-left: 1.2rem; font-size: .8rem; }
+  nav .sec {
+    margin-top: 1rem;
+    margin-bottom: .35rem;
+    font-size: .7rem;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--accent2);
+    padding-left: .6rem;
+  }
+
+  main {
+    padding: 2rem 2.5rem 4rem;
+    max-width: none;
+    width: 100%;
+    background: #ffffff;
+  }
+
+  h1 {
+    font-size: 2rem;
+    margin: 0 0 .5rem;
+    letter-spacing: -.02em;
+    color: var(--text);
+  }
+  .lede {
+    color: var(--muted);
+    font-size: 1.05rem;
+    margin-bottom: 2rem;
+    max-width: none;
+  }
+
+  h2 {
+    font-size: 1.45rem;
+    margin: 2.75rem 0 1rem;
+    padding-bottom: .5rem;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+  }
+  h3 {
+    font-size: 1.15rem;
+    margin: 1.75rem 0 .75rem;
+    color: var(--accent2);
+  }
+  h4 {
+    font-size: 1rem;
+    margin: 1.25rem 0 .5rem;
+    color: var(--warn);
+  }
+
+  p { margin: .6rem 0; max-width: none; }
+  ul, ol { max-width: none; color: var(--text); }
+  li { margin: .3rem 0; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem 1.4rem;
+    margin: 1rem 0 1.5rem;
+    box-shadow: var(--shadow);
+  }
+  .card.tight { padding: 1rem 1.1rem; }
+
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+  }
+  .grid-3 {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1rem;
+  }
+
+  .pill {
+    display: inline-block;
+    font-size: .72rem;
+    font-family: var(--mono);
+    padding: .15rem .5rem;
+    border-radius: 999px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--accent2);
+    margin-right: .25rem;
+  }
+  .pill.warn { color: var(--warn); }
+  .pill.ok { color: var(--ok); }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: .88rem;
+    margin: 1rem 0 1.5rem;
+    background: #ffffff;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  th, td {
+    text-align: left;
+    padding: .65rem .85rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th {
+    background: var(--surface2);
+    color: var(--accent2);
+    font-weight: 600;
+    font-size: .78rem;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #f1f5f9; }
+  td.fn {
+    font-family: var(--mono);
+    font-size: .8rem;
+    color: var(--accent);
+    white-space: nowrap;
+  }
+  td.path {
+    font-family: var(--mono);
+    font-size: .78rem;
+    color: var(--muted);
+  }
+
+  code, .mono {
+    font-family: var(--mono);
+    font-size: .85em;
+    background: var(--code-bg);
+    padding: .05em .35em;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.1rem;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: .8rem;
+    line-height: 1.5;
+    color: #334155;
+  }
+  pre code {
+    background: none;
+    border: none;
+    padding: 0;
+  }
+
+  .flow {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .5rem;
+    margin: 1rem 0;
+  }
+  .flow .step {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: .55rem .85rem;
+    font-size: .82rem;
+  }
+  .flow .arrow {
+    color: var(--muted);
+    font-size: 1.1rem;
+  }
+
+  .mermaid-box {
+    background: #ffffff;
+    color: #111;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem;
+    margin: 1rem 0 1.5rem;
+    overflow-x: auto;
+    width: 100%;
+  }
+  .mermaid-box .mermaid {
+    width: 100%;
+  }
+  .timing-note {
+    font-size: .82rem;
+    color: var(--muted);
+    margin: -.5rem 0 1rem;
+  }
+
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: #eff6ff;
+    padding: .85rem 1rem;
+    margin: 1rem 0;
+    border-radius: 0 8px 8px 0;
+  }
+  .callout.warn { border-left-color: var(--warn); background: #fffbeb; }
+  .callout.ok { border-left-color: var(--ok); background: #ecfdf5; }
+
+  .step-block {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin: 1.25rem 0;
+    overflow: hidden;
+    background: #fff;
+    box-shadow: var(--shadow);
+  }
+  .step-block .step-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem 1rem;
+    align-items: baseline;
+    padding: .75rem 1rem;
+    background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+  }
+  .step-block .step-num {
+    font-family: var(--mono);
+    font-size: .75rem;
+    font-weight: 700;
+    color: #fff;
+    background: var(--accent);
+    padding: .15rem .5rem;
+    border-radius: 4px;
+  }
+  .step-block .step-title { font-weight: 600; }
+  .step-block .step-fn {
+    font-family: var(--mono);
+    font-size: .78rem;
+    color: var(--muted);
+  }
+  .step-block .step-body { padding: .9rem 1.1rem 1.1rem; }
+  .step-block .io-label {
+    font-size: .72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: var(--accent2);
+    margin: .85rem 0 .35rem;
+  }
+  .step-block .io-label:first-child { margin-top: 0; }
+  .step-block .io-box {
+    background: #f8fafc;
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    padding: .65rem .85rem;
+    font-size: .88rem;
+  }
+  .step-block .io-box ul { margin: .25rem 0 0; padding-left: 1.2rem; }
+  .step-block .io-box.out {
+    background: #f0fdf4;
+    border-color: #bbf7d0;
+  }
+  .step-block .io-box.timing {
+    background: #fff7ed;
+    border-color: #fed7aa;
+    border-style: solid;
+  }
+  .timing-tag {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: .72rem;
+    background: #fff7ed;
+    border: 1px solid #fdba74;
+    color: #9a3412;
+    padding: .1rem .45rem;
+    border-radius: 4px;
+    margin: .15rem .2rem .15rem 0;
+  }
+  .timing-ex {
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: .78rem;
+  }
+
+  .file-tag {
+    font-family: var(--mono);
+    font-size: .78rem;
+    background: var(--code-bg);
+    padding: .2rem .55rem;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    color: var(--text);
+  }
+
+  footer {
+    margin-top: 3rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: .85rem;
+  }
+
+  @media (max-width: 960px) {
+    .layout { grid-template-columns: 1fr; }
+    nav {
+      position: relative;
+      height: auto;
+      max-height: none;
+      border-right: none;
+      border-bottom: 1px solid var(--border);
+    }
+    .grid-2, .grid-3 { grid-template-columns: 1fr; }
+    main { padding: 1.25rem 1rem 3rem; }
+    td.fn { white-space: normal; }
+  }
+</style>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: "neutral",
+    securityLevel: "loose",
+    flowchart: { curve: "basis", htmlLabels: true }
+  });
+</script>
+</head>
+<body>
+<div class="layout">
+<nav>
+  <div class="brand">ms_fusion_loop</div>
+  <div class="brand-sub">回环闭环实现指南</div>
+
+  <div class="sec">总览</div>
+  <a href="#overview">架构总览</a>
+  <a href="#pipeline">端到端流水线</a>
+  <a href="#io">输入 / 输出</a>
+  <a href="#threads">线程模型</a>
+
+  <div class="sec">核心算法</div>
+  <a href="#detect">DBoW3 候选检索</a>
+  <a href="#verify">几何验证</a>
+  <a href="#optimize">位姿图优化</a>
+  <a href="#ceres-io" class="sub">Ceres 输入 / 变量</a>
+  <a href="#huber" class="sub">HuberLoss</a>
+  <a href="#drift">Drift 校正</a>
+
+  <div class="sec">按文件</div>
+  <a href="#node">pose_graph_node.cpp</a>
+  <a href="#params">parameters</a>
+  <a href="#keyframe">keyframe</a>
+  <a href="#posegraph">pose_graph</a>
+  <a href="#utility">utility</a>
+  <a href="#thirdparty">ThirdParty / tools</a>
+
+  <div class="sec">系统协作</div>
+  <a href="#coop">与 ms_fusion 互动</a>
+  <a href="#descriptors">描述子几套</a>
+  <a href="#desc-size" class="sub">尺寸 / map</a>
+  <a href="#desc-l2" class="sub">为何能 L2 差值</a>
+  <a href="#dbow3">DBoW3 训练与在线</a>
+  <a href="#dbow-retrieve" class="sub">词直方图检索</a>
+  <a href="#dbow-what" class="sub">检索什么 / 在线关系</a>
+  <a href="#dbow-near" class="sub">近邻很像怎么办</a>
+  <a href="#keyframe-data">关键帧数据结构</a>
+  <a href="#two-rt">两套 RT / drift</a>
+  <a href="#ivps-pipeline">IVPS → 回环全链路</a>
+  <a href="#fusion-mermaid">融合后端细节</a>
+  <a href="#step-intermediates">逐步中间结果</a>
+  <a href="#timing-map">Timing ↔ 步骤</a>
+  <a href="#topics-contract">话题契约</a>
+
+  <div class="sec">附录</div>
+  <a href="#thresholds">关键阈值门限</a>
+</nav>
+
+<main>
+  <h1>ms_fusion_loop 回环实现逻辑</h1>
+  <p class="lede">
+    基于 VINS PoseGraph 的 ROS2 独立节点：DBoW3 视觉词袋检索候选 →
+    Mutual NN + PnP 几何验证 → Ceres 位姿图优化 → 将 drift 回写到实时里程计。
+    本文按流水线与文件/函数逐项说明。
+  </p>
+
+  <!-- ========== OVERVIEW ========== -->
+  <h2 id="overview">1. 架构总览</h2>
+  <div class="card">
+    <p>
+      包路径：<span class="file-tag">ros_wrapper/src/ms_fusion_loop/</span>
+    </p>
+    <p>
+      运行时只做<strong>回环检测与位姿图优化</strong>，不提取特征。描述子由
+      <code>ms_fusion</code> 前端在关键帧上产出，经 ROS topic 送入本节点。
+    </p>
+    <div class="grid-3" style="margin-top:1rem">
+      <div class="card tight" style="margin:0;box-shadow:none">
+        <span class="pill">检索</span>
+        <p style="margin:.4rem 0 0;font-size:.9rem">DBoW3 Vocabulary + Database，用 BoW 描述子找历史相似帧</p>
+      </div>
+      <div class="card tight" style="margin:0;box-shadow:none">
+        <span class="pill ok">验证</span>
+        <p style="margin:.4rem 0 0;font-size:.9rem">Mutual NN + Lowe ratio + PnP RANSAC + 相对位姿门限</p>
+      </div>
+      <div class="card tight" style="margin:0;box-shadow:none">
+        <span class="pill warn">优化</span>
+        <p style="margin:.4rem 0 0;font-size:.9rem">4DoF（有 IMU）或 6DoF（纯 VO）Ceres 位姿图</p>
+      </div>
+    </div>
+  </div>
+
+  <h2 id="pipeline">2. 端到端流水线</h2>
+  <div class="mermaid-box">
+    <pre class="mermaid">
+flowchart TD
+  A["ms_fusion 发布<br/>pose / point / descriptors"] --> B["pose_graph_node<br/>时间戳同步"]
+  B --> C["构造 KeyFrame"]
+  C --> D["PoseGraph::addKeyFrame"]
+  D --> E["detectLoopCandidates<br/>DBoW3 query"]
+  E --> F["KeyFrame::findConnection"]
+  F --> G["matchMutualNNLowe<br/>+ PnPRANSAC"]
+  G -->|通过门限| H["optimize_buf"]
+  H --> I["optimize4DoF / optimize6DoF"]
+  I --> J["更新 r_drift / t_drift"]
+  J --> K["vio_callback<br/>输出校正里程计"]
+    </pre>
+  </div>
+
+  <div class="flow">
+    <div class="step">同步关键帧</div><span class="arrow">→</span>
+    <div class="step">建 KeyFrame</div><span class="arrow">→</span>
+    <div class="step">DBoW 候选</div><span class="arrow">→</span>
+    <div class="step">NN + PnP</div><span class="arrow">→</span>
+    <div class="step">入优化队列</div><span class="arrow">→</span>
+    <div class="step">Ceres 求解</div><span class="arrow">→</span>
+    <div class="step">校正 odom</div>
+  </div>
+
+  <h2 id="io">3. 输入 / 输出</h2>
+  <h3>订阅（输入）</h3>
+  <table>
+    <thead><tr><th>Topic 配置项</th><th>类型</th><th>用途</th></tr></thead>
+    <tbody>
+      <tr>
+        <td class="fn">keyframe_pose_topic</td>
+        <td><code>nav_msgs/Odometry</code></td>
+        <td>关键帧 VIO 位姿</td>
+      </tr>
+      <tr>
+        <td class="fn">keyframe_point_topic</td>
+        <td><code>sensor_msgs/PointCloud</code></td>
+        <td>3D 路标 + 2D/归一化坐标 + id</td>
+      </tr>
+      <tr>
+        <td class="fn">keyframe_descriptors_topic</td>
+        <td><code>sensor_msgs/Image</code></td>
+        <td>BoW 检索描述子 + landmark 几何描述子</td>
+      </tr>
+      <tr>
+        <td class="fn">raw_odometry_topic</td>
+        <td><code>nav_msgs/Odometry</code></td>
+        <td>高频 VIO，经 drift 校正后转发</td>
+      </tr>
+      <tr>
+        <td class="fn">extrinsic_topic</td>
+        <td><code>nav_msgs/Odometry</code></td>
+        <td>更新 IMU–相机外参 <code>tic/qic</code></td>
+      </tr>
+      <tr>
+        <td class="fn">image_topic</td>
+        <td><code>sensor_msgs/Image</code></td>
+        <td>可选；仅 <code>save_image=true</code> 时订阅，用于匹配可视化</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>发布（输出）</h3>
+  <table>
+    <thead><tr><th>Topic</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td class="fn">odometry_rect_topic</td><td>经 sequence 对齐 + drift 校正后的里程计（默认 <code>/odometry</code>）</td></tr>
+      <tr><td class="fn">/pose_graph_path, /path_*, /base_path</td><td>RViz 路径（需 <code>enable_rviz</code>）</td></tr>
+      <tr><td class="fn">/pose_graph, /camera_pose_visual</td><td>MarkerArray 可视化</td></tr>
+      <tr><td class="fn">/match_image</td><td>闭环匹配拼图（需 <code>save_image</code>）</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <strong>描述子载荷格式</strong>（<code>cam0_loop_desc_v2</code>）：每行
+    <code>[kind, u, v, desc...]</code>。
+    <code>kind≈0</code> 为检索（BoW）行；<code>kind≈1</code> 为与 3D 路标对齐的 landmark 行。
+    旧格式仅 <code>[u, v, desc...]</code>，可检索但无法做几何验证。
+  </div>
+
+  <h2 id="threads">4. 线程模型</h2>
+  <table>
+    <thead><tr><th>线程</th><th>职责</th></tr></thead>
+    <tbody>
+      <tr><td class="fn">ROS spin</td><td>回调填队列；<code>vio_callback</code> 实时读 drift 并发布校正里程计</td></tr>
+      <tr><td class="fn">process</td><td>同步 pose/point/(image)/desc → 建 KF → 检索 + 几何验证</td></tr>
+      <tr><td class="fn">optimize4DoF / optimize6DoF</td><td>消费 <code>optimize_buf</code>（合并多请求只留最新）→ Ceres → 更新 pose/drift</td></tr>
+      <tr><td class="fn">command</td><td>TTY 下：<code>s</code> 存位姿图并退出，<code>n</code> 新 sequence</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout warn">
+    两套校正量：
+    <ul>
+      <li><code>w_r_vio / w_t_vio</code> — 多 sequence 对齐（跨段首次闭环时写入）</li>
+      <li><code>r_drift / t_drift</code> — 位姿图优化后的全局 drift（给高频 odom 用）</li>
+    </ul>
+  </div>
+
+  <!-- ========== ALGORITHMS ========== -->
+  <h2 id="detect">5. DBoW3 候选检索</h2>
+  <p>入口：<code>PoseGraph::detectLoopCandidates</code></p>
+  <ol>
+    <li>将关键帧 <code>bow_descriptors</code> 转为 float，经 Vocabulary <code>transform</code> 得到 <code>BowVector</code></li>
+    <li><code>dpl_db.query(bow, ret, 4, maxEligibleDatabaseId)</code>：取 top-4，并禁止匹配最近 50 帧</li>
+    <li>立刻把本帧 BoW <code>add</code> 进数据库</li>
+    <li>门限：<code>frame_index &gt; 50</code> 且最佳 score &gt; <code>loop.dbow_best_score_threshold</code>；保留 score &gt; <code>loop.dbow_candidate_score_threshold</code> 的结果映射为 keyframe index（默认分别为 0.60、0.40）</li>
+    <li>候选收窄：在上一步之上再叠加 <code>score &gt;= best_score * loop.dbow_candidate_relative_ratio</code>，且最多保留 <code>loop.dbow_max_candidates</code> 个（默认 0.90、2），减少送去几何验证的候选数；实测中 <code>dbow_candidate_score_threshold</code> 基本筛不掉候选（top-4 常年塞满），真正起作用的是这一步</li>
+  </ol>
+
+  <h2 id="verify">6. 几何验证</h2>
+  <p>入口：<code>KeyFrame::findConnection</code></p>
+  <ol>
+    <li>要求当前帧 <code>landmark_descriptors</code> 与 <code>point_3d</code> 一一对齐</li>
+    <li><code>matchMutualNNLowe(landmark_desc, old_kf-&gt;bow_descriptors)</code>：双向 Mutual NN + Lowe ratio（0.8）</li>
+    <li>组装 3D–2D；旧帧像素经 <code>pixelToNormalized</code> 反投影</li>
+    <li>匹配数 ≥ <code>min_loop_num</code> → <code>PnPRANSAC</code></li>
+    <li>内点数仍够，且相对 yaw &lt; 30°、平移 &lt; 20 m → 接受，写入 <code>has_loop / loop_index / loop_info</code></li>
+  </ol>
+  <div class="callout">
+    在线验证时：<strong>当前帧</strong>用 landmark 描述子，<strong>历史帧</strong>用压缩后的 BoW 检索描述子。
+    历史帧的 landmark/3D 在加入位姿图后会被释放以省内存。
+  </div>
+
+  <h2 id="optimize">7. 位姿图优化</h2>
+  <p>
+    入口：<code>optimize4DoF</code> / <code>optimize6DoF</code>（由 <code>loop.use_imu</code> 选择）。
+    Ceres 优化的是一段关键帧的<strong>位姿图</strong>，不是特征点，也不重跑 VIO。
+    范围：<code>earliest_loop_index</code> → 当前闭环关键帧；锚点固定；最多 5 次迭代。
+  </p>
+  <div class="grid-2">
+    <div class="card">
+      <h4 style="margin-top:0">4DoF（use_imu=true）</h4>
+      <p>优化 x, y, z, yaw；pitch/roll 固定（取自 VIO）。</p>
+      <ul>
+        <li>近邻边：<code>FourDOFError</code>（同 sequence、间隔 ≤4，无 Huber）</li>
+        <li>回环边（默认，<code>graph_loop_split_residual=false</code>）：<code>FourDOFWeightError</code> + <code>HuberLoss(0.1)</code>（yaw 残差另 /10）</li>
+        <li>回环边（<code>graph_loop_split_residual=true</code>）：拆成 <code>LoopTranslationError</code>（3 维，<code>/graph_loop_sigma_t_m</code>）与 <code>LoopYawError</code>（1 维，<code>/graph_loop_sigma_yaw_deg</code>），各自独立 <code>HuberLoss</code>（阈值单位为 sigma；平移的 Huber 作用在 ‖r_t‖ 上）；<code>graph_loop_translation_enable=false</code> 时只保留 yaw</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4 style="margin-top:0">6DoF（纯 VO）</h4>
+      <p>全姿态四元数 + 平移。</p>
+      <ul>
+        <li>近邻 / 回环均用 <code>RelativeRTError</code></li>
+        <li>仅回环边加 Huber（默认旧实现一个 <code>HuberLoss(0.1)</code>；拆分模式下平移、yaw 各一个）</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3 id="ceres-io">Ceres 输入是什么，要优化什么</h3>
+  <h4>优化变量</h4>
+  <table>
+    <thead><tr><th></th><th>4DoF</th><th>6DoF</th></tr></thead>
+    <tbody>
+      <tr><td>每帧</td><td>平移 t∈R³ + yaw</td><td>平移 t + 四元数 q</td></tr>
+      <tr><td>固定</td><td>pitch/roll 不优化</td><td>—</td></tr>
+      <tr><td>锚点</td><td colspan="2"><code>first_looped</code> 或 <code>sequence==0</code> 的位姿 SetConstant</td></tr>
+      <tr><td>初值</td><td colspan="2">各帧当前 <strong>VIO 位姿</strong></td></tr>
+    </tbody>
+  </table>
+
+  <h4>输入（残差边，测量为常数）</h4>
+  <ol>
+    <li><strong>短程顺序边</strong>：同序列邻居 j=1..4，用建图时 VIO 相对位姿作观测
+      （4DoF：相对 t+yaw；6DoF：相对 t+q）。<code>loss=NULL</code>，更信短程 VIO。</li>
+    <li><strong>回环边</strong>：若 <code>has_loop</code>，测量 = <code>loop_info</code> 的相对 RT（PnP 几何验证结果）。
+      带 Huber。不把描述子/3D 点/IMU 预积分送进 Ceres——那些只在前面产出 <code>loop_info</code> 与 VIO。</li>
+  </ol>
+  <p>优化后：窗口内写 <code>T_w_i/R_w_i</code> → 用 cur 优化 vs VIO 更新 <code>r_drift/t_drift</code>。</p>
+  <div class="callout ok">
+    <strong>一句话</strong>：输入 = VIO 短程相对运动 + 回环相对 RT；优化 = 窗口内各 KF 位姿（锚点固定）。
+  </div>
+
+  <h3 id="huber">HuberLoss 做什么</h3>
+  <p>
+    Ceres 鲁棒核：残差大时减弱该边对优化的拉力，减轻错误回环把轨迹拧歪。
+    本工程仅回环边使用 Huber（默认旧实现是 <code>new ceres::HuberLoss(0.1)</code>，拆分模式下平移、yaw 各一个，阈值由 <code>graph_loop_huber_t / graph_loop_huber_yaw</code> 配置）；短程 VIO 边不加。
+  </p>
+  <p>Ceres 对残差平方和 s = ||r||² 施加损失 ρ(s)（参数 δ = 0.1，即代码里的 0.1）：</p>
+  <pre>ρ(s) = s                         当 s ≤ δ²
+ρ(s) = 2 δ √s − δ²               当 s &gt; δ²
+
+即 |r| ≤ δ 时与普通平方损失同阶；
+   |r| &gt; δ 时近似随 |r| 线性增长（外点权重下降）。
+
+δ = 0.1  →  δ² = 0.01</pre>
+  <p>
+    等价理解：小残差按二次惩罚；超过阈值后「打折」，假阳性 / 噪声大的 loop 边影响力变小。
+    （Ceres 实现为缩放形式 a²·ρ(s/a²)，a=δ，上式即展开结果。）
+  </p>
+  <div class="callout warn">
+    4DoF 回环（默认旧实现）还有额外设计：yaw 分量在代价里再 /10，进一步降低朝向噪声的影响。注意：近邻边链很长时，这会让回环几乎改不动 yaw（实测 yaw 差 13.5° 只改 0.04°）；拆分模式用 <code>graph_loop_sigma_yaw_deg</code> 显式表达 yaw 权重。
+  </div>
+
+  <h2 id="drift">8. Drift 校正</h2>
+  <ul>
+    <li><strong>4DoF</strong>：<code>yaw_drift</code> + 平移 drift，只校正 yaw 旋转</li>
+    <li><strong>6DoF</strong>：<code>r_drift = cur_R * vio_Rᵀ</code>，全姿态</li>
+    <li><code>vio_callback</code>：先乘 sequence 对齐 <code>w_*</code>，再乘 <code>r_drift/t_drift</code>，发布校正 odom</li>
+  </ul>
+
+  <!-- ========== FILES ========== -->
+  <h2 id="node">9. pose_graph_node.cpp</h2>
+  <p class="path">ROS 节点入口：订阅、同步、建关键帧、键盘命令。</p>
+
+  <table>
+    <thead><tr><th>函数</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td class="fn">makeReliabilityQos</td><td>按 best_effort / reliable 构造 QoS</td></tr>
+      <tr><td class="fn">pushBounded</td><td>有界队列，超限丢最旧</td></tr>
+      <tr><td class="fn">stampSec / stampNs</td><td>stamp 转秒 / 纳秒</td></tr>
+      <tr><td class="fn">decodeDescriptors</td><td>解析描述子 Image（v2 拆 BoW/landmark；兼容旧格式）</td></tr>
+      <tr><td class="fn">parseKeyframePointCloud</td><td>解析 PointCloud 的 3D + channels（per-point 或 VINS 多 channel）</td></tr>
+      <tr><td class="fn">new_sequence</td><td>图像时间跳变时开新 sequence，清空队列、重置可视化</td></tr>
+      <tr><td class="fn">image_callback</td><td>可选原图入队；检测时间不连续</td></tr>
+      <tr><td class="fn">descriptors_callback</td><td>描述子入队</td></tr>
+      <tr><td class="fn">point_callback</td><td>关键帧点云入队</td></tr>
+      <tr><td class="fn">pose_callback</td><td>关键帧位姿入队</td></tr>
+      <tr><td class="fn">vio_callback</td><td>读 getVioCorrection，施加对齐+drift，发布校正里程计</td></tr>
+      <tr><td class="fn">extrinsic_callback</td><td>更新 tic / qic</td></tr>
+      <tr><td class="fn">findDescriptorByStamp</td><td>按纳秒精确匹配描述子（最多约等 1s）</td></tr>
+      <tr><td class="fn">process</td><td><strong>主处理线程</strong>：同步 → skip → 解码 → 对齐校验 → new KeyFrame → addKeyFrame</td></tr>
+      <tr><td class="fn">command</td><td>TTY：s 存图退出，n 新 sequence</td></tr>
+      <tr><td class="fn">main</td><td>加载配置/词袋、建订阅发布、启线程、spin</td></tr>
+    </tbody>
+  </table>
+
+  <h4>process 关键帧筛选</h4>
+  <ol>
+    <li><code>skip_first_cnt</code> — 丢掉开头若干帧</li>
+    <li><code>skip_cnt</code> — 隔帧采样</li>
+    <li><code>skip_dis</code> — 位移不足则跳过（≤0 则每帧都取）</li>
+    <li>几何对齐失败 → 清空 3D/landmark，只保留 DBoW 检索能力</li>
+  </ol>
+
+  <h2 id="params">10. parameters.h / parameters.cpp</h2>
+  <table>
+    <thead><tr><th>函数</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td class="fn">parseTransform4x4</td><td>YAML 4×4 → Eigen::Matrix4d</td></tr>
+      <tr><td class="fn">resolvePath</td><td>相对路径相对配置文件目录解析</td></tr>
+      <tr><td class="fn">normalizeReliability</td><td>QoS 字符串校验</td></tr>
+      <tr><td class="fn">loadLoopParameters</td><td>读 loop.* / camera.cam0 / tracking 下采样与 padding，缩放内参</td></tr>
+      <tr><td class="fn">liftProjective</td><td>像素 → 归一化射线（pinhole-radtan 反畸变）</td></tr>
+      <tr><td class="fn">pixelToNormalized</td><td>liftProjective 封装，供 PnP 使用</td></tr>
+      <tr><td class="fn">loopMinNum</td><td>（keyframe.h）几何验证最少匹配数，优先 yaml min_loop_num</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="keyframe">11. keyframe.h / keyframe.cpp</h2>
+  <p>成员字段一览见 <a href="#keyframe-data">§16.3 关键帧数据结构</a>。</p>
+  <h3>匿名命名空间辅助</h3>
+  <table>
+    <thead><tr><th>函数</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td class="fn">reduceVector</td><td>按 RANSAC status 压缩向量</td></tr>
+      <tr><td class="fn">normalizeDescriptorRows</td><td>行 L2 归一化到 float</td></tr>
+      <tr><td class="fn">l2Distance</td><td>描述子欧氏距离</td></tr>
+      <tr><td class="fn">findTwoNearest</td><td>查询向量在训练集上的最近 / 次近邻</td></tr>
+    </tbody>
+  </table>
+
+  <h3>公开 API</h3>
+  <table>
+    <thead><tr><th>函数</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td class="fn">matchMutualNNLowe</td><td>双向 Mutual NN + Lowe ratio</td></tr>
+      <tr><td class="fn">KeyFrame（在线）</td><td>存 VIO 位姿、3D/2D、BoW（压成 CV_8SC1）、landmark 描述子</td></tr>
+      <tr><td class="fn">KeyFrame（加载）</td><td>从磁盘恢复，含已有 loop_info</td></tr>
+      <tr><td class="fn">PnPRANSAC</td><td>solvePnPRansac；初值来自当前 VIO 相机位姿；输出旧帧 IMU 位姿</td></tr>
+      <tr><td class="fn">findConnection</td><td>几何闭环核心（见 §6）</td></tr>
+      <tr><td class="fn">getVioPose / getPose</td><td>读 VIO / 优化后位姿</td></tr>
+      <tr><td class="fn">updatePose / updateVioPose</td><td>写位姿（后者同步 T_w_i）</td></tr>
+      <tr><td class="fn">getLoopRelativeT/Q/Yaw</td><td>从 loop_info[0..7] 取相对位姿</td></tr>
+      <tr><td class="fn">updateLoop</td><td>姿态门限内更新 loop_info</td></tr>
+      <tr><td class="fn">releaseLoopRetrievalData</td><td>超限淘汰时释放 BoW / 图像</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="posegraph">12. pose_graph.h / pose_graph.cpp</h2>
+  <h3>辅助（匿名命名空间）</h3>
+  <table>
+    <thead><tr><th>函数</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td class="fn">toRosTime</td><td>double → rclcpp::Time</td></tr>
+      <tr><td class="fn">descriptorsAsFloat</td><td>BoW 描述子转 CV_32F（含 int8 缩放）</td></tr>
+      <tr><td class="fn">appendVisualPose</td><td>Path 追加并裁剪长度</td></tr>
+      <tr><td class="fn">addAngleParameterBlock</td><td>Ceres yaw 流形 / 局部参数化</td></tr>
+      <tr><td class="fn">addQuaternionParameterBlock</td><td>Ceres 四元数流形</td></tr>
+    </tbody>
+  </table>
+
+  <h3>PoseGraph 成员</h3>
+  <table>
+    <thead><tr><th>函数</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td class="fn">构造 / 析构</td><td>初始化 drift、可视化；析构 detach 优化线程</td></tr>
+      <tr><td class="fn">registerPub</td><td>注册 RViz Path / Marker 发布器</td></tr>
+      <tr><td class="fn">setIMUFlag</td><td>启 optimize4DoF 或 optimize6DoF 线程</td></tr>
+      <tr><td class="fn">loadVocabulary</td><td>加载词袋，清空检索库</td></tr>
+      <tr><td class="fn">addKeyFrame</td><td><strong>在线主入口</strong>：对齐 → 检索 → 验证 → 入图 → 入优化队列</td></tr>
+      <tr><td class="fn">loadKeyFrame</td><td>加载旧图时插入（一般不检测回环）</td></tr>
+      <tr><td class="fn">getKeyFrame</td><td>线性查找 keyframelist</td></tr>
+      <tr><td class="fn">addBowToDatabase</td><td>BoW 入 DBoW3 Database，记 loop_database_entries</td></tr>
+      <tr><td class="fn">maxEligibleDatabaseId</td><td>禁止匹配最近 50 帧</td></tr>
+      <tr><td class="fn">enforceLoopKeyframeLimit</td><td>超过 max_loop_keyframes 时淘汰最旧</td></tr>
+      <tr><td class="fn">detectLoopCandidates</td><td>DBoW transform → query → add → score 筛候选</td></tr>
+      <tr><td class="fn">addKeyFrameIntoVoc</td><td>只入库不查询</td></tr>
+      <tr><td class="fn">optimize4DoF</td><td>后台 4DoF 优化线程</td></tr>
+      <tr><td class="fn">optimize6DoF</td><td>后台 6DoF 优化线程</td></tr>
+      <tr><td class="fn">updatePath</td><td>优化后重建可视化 Path / 边</td></tr>
+      <tr><td class="fn">savePoseGraph / loadPoseGraph</td><td>磁盘持久化 / 加载</td></tr>
+      <tr><td class="fn">publish</td><td>发布 Path / Marker</td></tr>
+      <tr><td class="fn">getVioCorrection</td><td>线程安全读 sequence 对齐 + drift</td></tr>
+    </tbody>
+  </table>
+
+  <h4>addKeyFrame 步骤</h4>
+  <ol>
+    <li>新 sequence：重置 <code>w_*_vio</code> 与 drift</li>
+    <li>用 <code>w_r_vio/w_t_vio</code> 把 VIO 变到统一坐标系</li>
+    <li><code>detectLoopCandidates</code>（或仅入库）</li>
+    <li>对候选依次 <code>findConnection</code>，第一个成功即停</li>
+    <li>跨 sequence 首次闭环：算 <code>shift_r/t</code>，整 sequence 对齐</li>
+    <li>用 <code>r_drift/t_drift</code> 更新可视化位姿；释放 landmark/3D；入 list</li>
+    <li>闭环成功 → <code>optimize_buf.push</code></li>
+  </ol>
+
+  <h3>代价函数与工具（pose_graph.h）</h3>
+  <table>
+    <thead><tr><th>类型 / 函数</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td class="fn">QuaternionInverse / NormalizeAngle</td><td>四元数共轭、角度归一化</td></tr>
+      <tr><td class="fn">AngleLocalParameterization / AngleManifold</td><td>yaw 角度流形</td></tr>
+      <tr><td class="fn">YawPitchRollToRotationMatrix 等</td><td>4DoF 残差几何辅助</td></tr>
+      <tr><td class="fn">FourDOFError</td><td>序列近邻相对 (t, yaw)</td></tr>
+      <tr><td class="fn">FourDOFWeightError</td><td>回环边（加权，默认旧实现）</td></tr>
+      <tr><td class="fn">LoopTranslationError / LoopYawError</td><td>回环边拆分实现（<code>graph_loop_split_residual=true</code>）</td></tr>
+      <tr><td class="fn">RelativeRTError</td><td>6DoF 相对位姿残差</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="utility">13. utility/</h2>
+  <table>
+    <thead><tr><th>文件</th><th>函数 / 类</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr>
+        <td class="path">loop_timing.*</td>
+        <td class="fn">LoopTiming::record* / countSkip*</td>
+        <td>耗时与跳过统计，周期性打印</td>
+      </tr>
+      <tr>
+        <td class="path">tic_toc.h</td>
+        <td class="fn">TicToc</td>
+        <td>毫秒计时器</td>
+      </tr>
+      <tr>
+        <td class="path">utility.*</td>
+        <td class="fn">R2ypr / ypr2R / normalizeAngle …</td>
+        <td>姿态角转换</td>
+      </tr>
+      <tr>
+        <td class="path">CameraPoseVisualization.*</td>
+        <td class="fn">add_pose / add_edge / add_loopedge / publish_by</td>
+        <td>RViz 相机框与回环边</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2 id="thirdparty">14. ThirdParty 与 tools</h2>
+  <div class="card">
+    <p>
+      <span class="file-tag">ThirdParty/DBoW3</span> —
+      词袋 <code>Vocabulary</code> + <code>Database::query/add/erase</code>。
+      业务只经 <code>PoseGraph::dpl_db</code> 调用，无需改 ThirdParty 源码。
+    </p>
+    <p>
+      <span class="file-tag">tools/</span> —
+      <code>train_*_voc</code>、<code>collect_gray_images</code>：离线训词袋，不参与在线回环。
+    </p>
+  </div>
+
+  <!-- ========== APPENDIX ========== -->
+  <h2 id="thresholds">15. 关键阈值门限</h2>
+  <table>
+    <thead><tr><th>位置</th><th>门限</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td>detectLoopCandidates</td><td>index &gt; 50</td><td>前 50 帧不做回环查询结果接受</td></tr>
+      <tr><td>detectLoopCandidates</td><td>best score &gt; loop.dbow_best_score_threshold（默认 0.60）</td><td>最佳候选最低相似度</td></tr>
+      <tr><td>detectLoopCandidates</td><td>score &gt; loop.dbow_candidate_score_threshold（默认 0.40）</td><td>进入验证列表</td></tr>
+      <tr><td>detectLoopCandidates</td><td>score &gt;= best_score * loop.dbow_candidate_relative_ratio，最多 loop.dbow_max_candidates 个（默认 0.90、2）</td><td>候选收窄，减少几何验证量</td></tr>
+      <tr><td>maxEligibleDatabaseId</td><td>近 50 帧</td><td>时间上过近的帧不匹配</td></tr>
+      <tr><td>findConnection</td><td>min_loop_num（默认 8）</td><td>NN / PnP 最少内点数</td></tr>
+      <tr><td>findConnection</td><td>|yaw| &lt; 45°，‖t‖ &lt; 20 m</td><td>相对位姿门</td></tr>
+      <tr><td>matchMutualNNLowe</td><td>Lowe ratio = 0.8</td><td>次近邻抑制</td></tr>
+      <tr><td>Ceres</td><td>max_num_iterations = 5</td><td>优化迭代上限</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="coop">16. 与 ms_fusion 的互动</h2>
+  <p>
+    两个独立 ROS2 节点，由 yaml <code>loop.enable=true</code> 时
+    <code>msf_robot.launch.py</code> 同启。<strong>ms_fusion 负责感知 + VIO + 关键帧打包发布</strong>；
+    <strong>ms_fusion_loop 只做检索 / 几何验证 / 位姿图</strong>，不取图、不提特征。
+  </p>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4 style="margin-top:0">ms_fusion 产出</h4>
+      <ul>
+        <li>关键帧：pose / point / descriptors / extrinsic（同 stamp）</li>
+        <li>连续：<code>/odometry_vio</code>（原始 VIO）</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4 style="margin-top:0">ms_fusion_loop 回馈</h4>
+      <ul>
+        <li>订阅上述话题 + 高频 VIO</li>
+        <li>发布校正后的 <code>/odometry</code>（对外主输出）</li>
+        <li>不回写 ms_fusion 内部状态（单向纠偏）</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="callout">
+    约定：<code>/odometry_vio</code> = 原始 VIO；
+    <code>/odometry</code> = 回环 drift 修正后的最终里程计。下游导航应订阅后者。
+  </div>
+
+  <h2 id="descriptors">16.1 描述子：一共几套、各自干什么</h2>
+  <p>
+    和回环相关的神经网络描述子<strong>只有两套</strong>（同一 XFeat/SuperPoint 模型、同一维数 D），
+    再加前端跟踪用的<strong>点迹</strong>（主要靠 KLT，不依赖描述子匹配）。入图后历史帧还会把检索描述子压成 int8。
+  </p>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4 style="margin-top:0">① 密集检索 / BoW</h4>
+      <p style="font-size:.9rem;margin:0">
+        <code>refreshLoopDescriptorsFromCurrent</code><br/>
+        NPU <code>detectWithDescriptors</code> 再跑左目<br/>
+        → <code>last_loop_keypoints_ / last_loop_descriptors_</code><br/>
+        行数 ≈ <code>max_num_features</code>（日志 <code>dense≈100</code>）
+      </p>
+    </div>
+    <div class="card">
+      <h4 style="margin-top:0">② VIO 路标 / PnP</h4>
+      <p style="font-size:.9rem;margin:0">
+        <code>refreshLoopLandmarkDescriptorsFromCurrent</code><br/>
+        同帧 descriptor map 上<br/>
+        <code>sampleDescriptors(pts_left_curr_)</code><br/>
+        → 与 feature <strong>id</strong> 绑定（日志 <code>landmark≈25</code>）
+      </p>
+    </div>
+    <div class="card">
+      <h4 style="margin-top:0">③ 跟踪点迹（非描述子库）</h4>
+      <p style="font-size:.9rem;margin:0">
+        <code>extractStereoFeatures</code> + KLT<br/>
+        产出像素 + id 供 VIO / 三角化<br/>
+        NPU 检测点可顺带填入 ① 的缓存，但立体关联主要靠光流
+      </p>
+    </div>
+  </div>
+
+  <div class="mermaid-box">
+    <pre class="mermaid">
+flowchart LR
+  IMG["左目 640×384"] --> NPU["同一 NPU 模型<br/>XFeat / SuperPoint"]
+  NPU --> DENSE["① 密集描述子 Nbow×D<br/>detect 关键点 + desc<br/>kind=0 · DBoW 检索"]
+  NPU --> MAP["descriptor map 缓存"]
+  MAP --> LM["② 路标描述子 Nvio×D<br/>在 VIO 像素采样<br/>kind=1 · MutualNN+PnP"]
+  TRACK["③ KLT 跟踪点 + id"] --> LM
+  DENSE --> ROS["cam0_loop_desc_v2<br/>两套拼成一张 Image"]
+  LM --> ROS
+  ROS --> CUR["当前 KF: landmark_desc<br/>对 旧 KF: bow_desc"]
+  CUR --> MATCH["Mutual NN"]
+  DENSE --> DB["DBoW Database<br/>历史只留 bow 压 int8"]
+    </pre>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>套</th>
+        <th>变量 / 载荷</th>
+        <th>点集从哪来</th>
+        <th>谁消费</th>
+        <th>寿命</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>① 检索 BoW</strong></td>
+        <td class="fn">loop_descriptors · bow_* · kind=0</td>
+        <td>NPU 本帧密集检测点（可与 VIO 点不同）</td>
+        <td>DBoW <code>transform/query/add</code>；历史帧作 NN 的 <em>train</em> 侧</td>
+        <td>长期保留；入图后压成 <code>CV_8SC1</code>；超限才释放</td>
+      </tr>
+      <tr>
+        <td><strong>② 路标 Landmark</strong></td>
+        <td class="fn">loop_landmark_* · landmark_descriptors · kind=1</td>
+        <td>当前 VIO <code>pts_left_curr_</code> + <code>ids_curr_</code></td>
+        <td>与 3D 1:1 对齐后做 Mutual NN + PnP（当前帧 <em>query</em> 侧）</td>
+        <td>仅当前关键帧验证用；<code>addKeyFrame</code> 后立刻 <code>release</code></td>
+      </tr>
+      <tr>
+        <td><strong>③ 跟踪点</strong></td>
+        <td class="fn">pts / ids · track_feat_info</td>
+        <td>KLT + 补充检测</td>
+        <td>滑窗 VIO、三角化、采样 ② 的像素位置</td>
+        <td>前端滑动；不进入 loop desc 话题</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>验证时两套怎么配对</h3>
+  <div class="callout">
+    <code>findConnection</code>：
+    <code>matchMutualNNLowe(<strong>当前 landmark_descriptors</strong>, <strong>旧帧 bow_descriptors</strong>)</code>。
+    即用「有 3D 的当前路标描述子」去匹配「历史检索描述子」——历史帧的 landmark/3D 已丢掉，只能留 BoW。
+  </div>
+  <div class="callout warn">
+    发布前 <code>publishKeyframeLoop</code> 会按 feature id + UV≤0.5px 过滤，
+    保证 <code>points_3d</code> 与 kind=1 行一一对应；对不齐则清空几何，只发 BoW（仍可检索，不能 PnP）。
+  </div>
+
+  <h3>和 timing 的对应</h3>
+  <ul>
+    <li>①+② 刷新合计：<code>frontend.core.loop_desc</code>（例 36.5ms）</li>
+    <li>② 采样：<code>npu_diag.desc_sample</code>（例 3.5ms，含在 loop_desc 口径内）</li>
+    <li>① 行数 / ② 行数：<code>frontend.loop_c dense / landmark</code>；loop 侧 <code>input dense / geom_desc</code></li>
+  </ul>
+
+  <h3 id="desc-size">XFeat / SuperPoint 尺寸与 map</h3>
+  <p>
+    默认跟踪画布为 <strong>640×384</strong>（模型如 <code>xfeat_npu1-full-384.axmodel</code> /
+    <code>superpoint_*_640384.axmodel</code>）。网络输出一张稠密描述子图
+    <code>DescriptorMap</code>，再在任意像素上插值取值。
+  </p>
+  <table>
+    <thead>
+      <tr><th>量</th><th>典型值（本工程）</th><th>说明</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>输入图像</td>
+        <td class="fn">640 × 384</td>
+        <td>tracking canvas（标定 640×360 + 底 pad 24）</td>
+      </tr>
+      <tr>
+        <td>描述子 map 空间</td>
+        <td class="fn">48 × 80（H×W）</td>
+        <td>输入 384×640 的 1/8；NCHW 里常写作 <code>[1, D, 48, 80]</code></td>
+      </tr>
+      <tr>
+        <td>描述子维数 D</td>
+        <td class="fn">XFeat = <strong>64</strong>；SuperPoint = <strong>256</strong></td>
+        <td>来自本仓库 axmodel 输出：XFeat <code>[1,64,48,80]</code>，SP <code>[1,256,48,80]</code></td>
+      </tr>
+      <tr>
+        <td>① 密集行数</td>
+        <td class="fn">≤ max_num_features（如 100）</td>
+        <td>在 map 上对检测关键点采样 → <code>N_bow × D</code></td>
+      </tr>
+      <tr>
+        <td>② 路标行数</td>
+        <td class="fn">≈ 当前 VIO 点数（如 25）</td>
+        <td>在<strong>同一张 map</strong>上对 VIO 像素采样 → <code>N_vio × D</code></td>
+      </tr>
+      <tr>
+        <td>历史 BoW 存储</td>
+        <td class="fn">CV_8SC1（×127）</td>
+        <td>匹配前再转回 float；维数仍为 D</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="mermaid-box">
+    <pre class="mermaid">
+flowchart TB
+  IMG["输入 640×384 灰度"] --> NPU["XFeat / SuperPoint NPU 推理一次"]
+  NPU --> SCORE["score map<br/>提关键点"]
+  NPU --> DMEM["DescriptorMap<br/>48×80×D<br/>XFeat D=64 / SP D=256<br/>timing: desc_map"]
+  SCORE --> KP["密集关键点 ≤100"]
+  KP --> S1["双线性采样 + L2 norm<br/>→ ① Nbow×D"]
+  DMEM --> S1
+  VIO["VIO 像素 pts_left_curr_"] --> S2["双线性采样 + L2 norm<br/>→ ② Nvio×D<br/>timing: desc_sample"]
+  DMEM --> S2
+  S1 --> MATCH["Mutual NN：L2 距离"]
+  S2 --> MATCH
+    </pre>
+  </div>
+
+  <h4>map 上怎么「插值」</h4>
+  <ol>
+    <li>像素坐标缩放到 map：<code>mx = u · spatial_w / image_w</code>，<code>my = v · spatial_h / image_h</code></li>
+    <li>每个通道在 <code>(mx,my)</code> 四邻域做<strong>双线性插值</strong>（<code>sampleChannel</code>）</li>
+    <li>得到的 D 维向量再 <strong>L2 归一化</strong> → 单位向量，供后续距离比较</li>
+  </ol>
+  <p>
+    实现：<code>sampleDescriptorsFromMap</code>（XFeat / SuperPoint 共用）。
+    这是 CPU 插值，<strong>不是再跑一遍网络</strong>。
+  </p>
+
+  <h3 id="desc-l2">为什么描述子可以做「差值 / L2」</h3>
+  <p>
+    这里的「差值」指匹配时用欧氏距离
+    \(d(\mathbf{a},\mathbf{b})=\|\mathbf{a}-\mathbf{b}\|_2=\sqrt{\sum_i(a_i-b_i)^2}\)
+    （公式里确实逐维相减，但最终用的是<strong>一个标量距离</strong>，不是把差分向量当新特征）。
+  </p>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4 style="margin-top:0">1. 训练成度量嵌入</h4>
+      <p style="font-size:.9rem;margin:0">
+        SuperPoint / XFeat 用对应点 / 对比学习，使「同一 3D 点不同视角」的描述子靠近、
+        「不同点」拉开。空间设计目标就是：<strong>视觉相似 ≈ 向量接近</strong>，因此 L2（或余弦）可当相似度。
+      </p>
+    </div>
+    <div class="card">
+      <h4 style="margin-top:0">2. 归一化后 L2 ⇔ 余弦</h4>
+      <p style="font-size:.9rem;margin:0">
+        采样后做单位化。对 \(\|\mathbf{a}\|=\|\mathbf{b}\|=1\)：
+        \(\|\mathbf{a}-\mathbf{b}\|_2^2 = 2-2\mathbf{a}\cdot\mathbf{b}\)。
+        L2 小 ⇔ 点积大 ⇔ 夹角小。Mutual NN 用 L2 与按余弦排序单调一致。
+      </p>
+    </div>
+  </div>
+
+  <div class="card">
+    <h4 style="margin-top:0">3. 稠密 map 可插值的原因</h4>
+    <p style="font-size:.9rem;margin:0">
+      描述子来自 CNN 特征图，相邻格子语义连续；双线性插值是在同一嵌入场上平滑取值，
+      插值结果仍落在同一度量空间，故任意亚像素位置也能继续用 L2 比。
+      本仓库 XFeat 与 SuperPoint 共用 <code>sampleDescriptorsFromMap</code>，原理相同，仅 D 与权重不同。
+    </p>
+  </div>
+
+  <div class="callout ok">
+    <strong>Mutual NN 在代码里</strong>：先对行做 L2 归一化，再 <code>l2Distance</code> 找双向最近邻 + Lowe ratio（0.8）。
+    当前帧用 ② landmark，历史帧用 ① bow（可能从 int8 还原 float）。
+  </div>
+  <div class="callout warn">
+    不是任意特征都能这样用：二值 BRIEF 更常用汉明距；未归一化的原始激活尺度乱跳时不宜直接欧氏比较。
+    SuperPoint/XFeat 是「为距离匹配训好的 float 嵌入」，所以可以。
+  </div>
+
+  <h2 id="dbow3">16.2 DBoW3：离线训练 vs 在线使用</h2>
+  <p>
+    DBoW3 在本工程里只做<strong>场景检索</strong>（找「看起来像」的旧关键帧），不输出位姿。
+    位姿靠后续 Mutual NN + PnP + 位姿图。词袋文件 <code>*.dbow3</code> 离线训一次、在线只读加载。
+  </p>
+
+  <h3>离线训练（板端工具）</h3>
+  <ol>
+    <li><strong>采图</strong>：停 <code>ms_fusion</code>，跑 <code>collect_gray_images</code> 从 IVPS 写灰度 PNG（如 640×384，间隔 ~200ms）。</li>
+    <li><strong>提特征</strong>：<code>train_xfeat_voc</code> / <code>train_superpoint_voc</code> 用与在线相同的 NPU 模型，对每张图
+      <code>detectWithDescriptors</code> → 得到 NxD float 描述子（XFeat D=64 / SuperPoint D=256）。</li>
+    <li><strong>建树</strong>：<code>DBoW3::Vocabulary(k, L).create(features)</code>，默认 <strong>k=10、L=5</strong>
+      （分支因子 × 深度 → 叶子词规模约 k^L 量级），层次 k-means 把描述子聚类成 visual words。</li>
+    <li><strong>存盘</strong>：压缩二进制 <code>*.dbow3</code> 放到 <code>ms_fusion_loop/voc/</code>，colcon 安装到
+      <code>share/ms_fusion/models/</code>。YAML 过大不可用。</li>
+  </ol>
+  <div class="callout warn">
+    词袋与检测器绑定：XFeat voc 不能配 SuperPoint（维度与聚类空间都不同）。
+    场景尽量覆盖目标环境；聚类大图集可能很久。详见 <code>tools/README.md</code>。
+  </div>
+  <pre>采图 PNG → NPU detectWithDescriptors → [N_i × D] float 列表
+       → Vocabulary.create(k=10,L=5) 层次聚类
+       → xfeat_voc_*.dbow3（visual word 树 + 权重）</pre>
+
+  <h3>在线使用（ms_fusion_loop）</h3>
+  <ol>
+    <li><strong>启动</strong>：<code>PoseGraph::loadVocabulary(voc_path)</code> 把树载入
+      <code>Database</code>（只一份，不另拷 Vocabulary）。</li>
+    <li><strong>每个关键帧</strong>：用 ① 密集 BoW 描述子（可能 int8→float）：
+      <code>voc->transform(descs, bow)</code> → 稀疏 <code>BowVector</code>（词 id → TF-IDF 权重）。</li>
+    <li><strong>检索</strong>：<code>dpl_db.query(bow, ret, 4, maxEligibleId)</code>
+      在历史库里找最多 4 个相似条目；排除过近帧（<code>maxEligibleDatabaseId</code>）。</li>
+    <li><strong>入库存档</strong>：立刻 <code>addBowToDatabase</code>，本帧直方图进入 DB，供以后检索。</li>
+    <li><strong>阈值</strong>：仅当 <code>frame_index &gt; 50</code> 且最优分 &gt; <code>loop.dbow_best_score_threshold</code>，再收集 score &gt; <code>loop.dbow_candidate_score_threshold</code> 的候选（默认 0.60 / 0.40）；
+      再叠加候选收窄（score &gt;= 最优分 * <code>loop.dbow_candidate_relative_ratio</code>，最多 <code>loop.dbow_max_candidates</code> 个，默认 0.90 / 2）；
+      之后才做几何验证（NN/PnP）。DBoW <strong>不</strong>参与匹配点对。</li>
+  </ol>
+  <pre>KF.bow_descriptors → transform → BowVector
+  → query top-4（score）→ 候选 KF id
+  → add 本帧 Bow 入 DB
+  → findConnection(Mutual NN + PnP) → 位姿图</pre>
+  <div class="callout ok">
+    <strong>记清楚</strong>：离线训的是「词表」；在线 DB 存的是「每帧的词直方图」。
+    几何匹配仍用原始描述子（历史 int8 bow_descs vs 当前 landmark）。
+  </div>
+
+  <h3 id="dbow-retrieve">词直方图检索怎么实现</h3>
+  <p>分三步：<strong>量化成 Bow</strong> → <strong>倒排索引累加分</strong> → <strong>阈值筛候选</strong>。</p>
+
+  <h4>1) 描述子 → BowVector（量化）</h4>
+  <ol>
+    <li>int8 <code>bow_descriptors</code> 还原 float（若需要）。</li>
+    <li>对每一行描述子：从词树根往下，每层选与节点中心<strong>距离最小</strong>的子节点，落到叶子 → <code>word_id</code>；权重取该词的 <strong>IDF</strong>（TF-IDF）。</li>
+    <li>同一词多次出现则 <code>addWeight</code> 累加（相当于 TF×IDF）。</li>
+    <li>L1 打分要求向量归一化 → 得到稀疏 map：<code>{word_id → weight}</code>，即词直方图。</li>
+  </ol>
+
+  <h4>2) 倒排索引查询（Database::queryL1）</h4>
+  <p>
+    DB 对每个 word 维护一行倒排表：<code>m_ifile[word] = [(entry_id, weight), …]</code>（按 entry 有序）。
+    入库 <code>add(bow)</code> 时把本帧出现过的词写入对应行。
+  </p>
+  <ol>
+    <li>遍历查询 Bow 里每个词，扫该词倒排行；跳过 <code>entry_id ≥ max_id</code>（本工程用「最近约 50 帧」作时间窗屏蔽）。</li>
+    <li>对每个命中历史条目累加 L1 相关项：
+      <code>|q−d| − |q| − |d|</code>（再缩放成 [0,1] 相似度；与直接算 ‖q−d‖₁ 等价的高效写法）。</li>
+    <li>按分数排序，取 top-4（<code>query(..., 4, maxEligibleId)</code>）。</li>
+  </ol>
+  <p>
+    复杂度约「查询非零词数 × 每词倒排长度」，远小于两两比全量直方图。
+    本工程 <code>use_di=false</code>，不用 direct index，只靠倒排 + Bow。
+  </p>
+
+  <h4>3) PoseGraph 侧门槛</h4>
+  <pre>score_best &gt; 0.05 且 frame_index &gt; 50
+  → 保留 score &gt; 0.015 的结果
+  → database_id → keyframe_index（database_to_keyframe）
+  → 交给 findConnection 做几何验证</pre>
+  <div class="callout warn">
+    检索只比「词权重向量」相似，不保证同一场景点；假阳性靠后续 Mutual NN + PnP 滤掉。
+  </div>
+
+  <h3 id="dbow-what">检索的是什么，和在线流程的关系</h3>
+  <p>
+    检索输出是<strong>历史关键帧候选 ID</strong>（最多约 4 个，带 score），
+    <strong>不是</strong>位姿、不是匹配点对、也不是原始描述子。
+  </p>
+  <table>
+    <thead><tr><th>输入</th><th>输出</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>当前 KF 的 ① dense BoW 描述子 → <code>BowVector</code></td>
+        <td>相似的 Database entry + score</td>
+      </tr>
+      <tr>
+        <td>—</td>
+        <td><code>database_to_keyframe</code> → 历史 keyframe index</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>库里比的是每帧<strong>词直方图</strong>；几何用的原始描述子仍挂在对应 <code>KeyFrame</code> 上。</p>
+  <p>在整条在线链路里，DBoW 只负责<strong>缩小搜索范围</strong>：</p>
+  <pre>ms_fusion 发布关键帧（pose + ①bow + ②landmark/3D …）
+    → ms_fusion_loop 建 KeyFrame
+    → 【DBoW 检索】→ 候选旧 KF（或空）
+    → Mutual NN + PnP → 相对位姿（几何验证）
+    → loop edge → 位姿图 → r_drift / t_drift
+    → vio_callback 纠正 /odometry</pre>
+  <ul>
+    <li><strong>有候选且几何通过</strong>：才产生真正回环约束。</li>
+    <li><strong>无候选 / 分数不够 / 几何失败</strong>：本帧只入库，不纠漂移。</li>
+    <li>不做全库 NN+PnP（太贵）；检索失败也不会凭空出位姿。</li>
+  </ul>
+  <div class="callout ok">
+    <strong>一句话</strong>：检索 = 找「像不像」的旧关键帧；闭环成败仍由匹配与 PnP 决定。
+  </div>
+
+  <h3 id="dbow-near">视角变化不大时，近邻 keyframe 岂不是很像？</h3>
+  <p>
+    对。连续关键帧场景重叠大，词直方图往往<strong>非常像</strong>——BoW 分数最高的经常是刚走过的几帧，而不是远处的真闭环。
+    这是常态，工程用「时间窗 + 门槛 + 几何」把「近邻像」和「真回环」分开。
+  </p>
+  <ol>
+    <li><strong>屏蔽最近约 50 个关键帧</strong>：<code>maxEligibleDatabaseId</code>，近邻不进 query 结果。</li>
+    <li><strong>起步再检</strong>：<code>frame_index &gt; 50</code> 才看候选。</li>
+    <li><strong>分数门槛</strong>：最优 &gt; 0.05，再留 &gt; 0.015；近邻已屏蔽后，剩的是「较远但像」的候选。</li>
+    <li><strong>几何验证</strong>：走廊重复纹理等误召回，Mutual NN + PnP 对不上就丢弃。</li>
+  </ol>
+  <table>
+    <thead><tr><th>情况</th><th>DBoW</th><th>系统行为</th></tr></thead>
+    <tbody>
+      <tr><td>相邻帧很像</td><td>分很高</td><td><strong>不参与检索</strong>（时间窗）</td></tr>
+      <tr><td>转一圈回到旧地、视角差不多</td><td>分也高</td><td>进候选 → NN/PnP → 可能真回环</td></tr>
+      <tr><td>不同地方但纹理像</td><td>也可能高</td><td>几何失败 → 无回环</td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn">
+    近邻「很像」被设计成忽略；检索要的是「隔一段时间仍很像」的旧 doc。真假最终仍看几何。
+  </div>
+
+  <h2 id="keyframe-data">16.3 关键帧都包括哪些数据结构</h2>
+  <p>
+    回环侧关键帧是 <code>KeyFrame</code>（<span class="file-tag">keyframe.h</span>）。
+    由 <code>KeyframeLoopMessage</code> 同步组装；字段分四块。
+  </p>
+
+  <h3>1) 身份与位姿</h3>
+  <table>
+    <thead><tr><th>字段</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td><code>time_stamp</code> / <code>index</code> / <code>local_index</code> / <code>sequence</code></td>
+        <td>时间、全局序号、优化局部序号、序列号</td></tr>
+      <tr><td><code>vio_T_w_i</code> / <code>vio_R_w_i</code></td>
+        <td>VIO 位姿（可被跨 sequence 对齐改写）</td></tr>
+      <tr><td><code>origin_vio_T</code> / <code>origin_vio_R</code></td>
+        <td>刚入库时的原始 VIO 位姿</td></tr>
+      <tr><td><code>T_w_i</code> / <code>R_w_i</code></td>
+        <td>位姿图优化后的位姿</td></tr>
+      <tr><td><code>image</code></td>
+        <td>可选灰度图（调试/可视化；库满时可释放）</td></tr>
+    </tbody>
+  </table>
+
+  <h3>2) 几何路标（给 PnP）</h3>
+  <p>与 VIO 特征一一对齐：</p>
+  <table>
+    <thead><tr><th>字段</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td><code>point_3d</code></td><td>世界系 3D</td></tr>
+      <tr><td><code>point_2d_uv</code></td><td>像素坐标</td></tr>
+      <tr><td><code>point_2d_norm</code></td><td>归一化相机平面</td></tr>
+      <tr><td><code>point_id</code></td><td>特征 ID</td></tr>
+      <tr><td><code>landmark_descriptors</code></td>
+        <td>在这些像素上采样的描述子（②），当前帧 Mutual NN 的 <strong>query</strong> 侧</td></tr>
+    </tbody>
+  </table>
+
+  <h3>3) 检索用描述子（给 DBoW / 历史 NN）</h3>
+  <table>
+    <thead><tr><th>字段</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td><code>bow_descriptors</code></td>
+        <td>密集 BoW 描述子（①，常压成 int8）</td></tr>
+      <tr><td><code>bow_keypoints</code></td><td>对应 2D 点</td></tr>
+    </tbody>
+  </table>
+  <p>旧帧做 Mutual NN 时当 <strong>train</strong>；当前帧 query 用 <code>landmark_descriptors</code>。</p>
+
+  <h3>4) 回环状态</h3>
+  <table>
+    <thead><tr><th>字段</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td><code>has_loop</code> / <code>loop_index</code></td>
+        <td>是否已连上旧 KF、对方 index</td></tr>
+      <tr><td><code>loop_info</code></td>
+        <td>8×1：相对平移 + 四元数 + 相对 yaw</td></tr>
+    </tbody>
+  </table>
+
+  <h3>与发布消息的对应</h3>
+  <p>
+    <code>KeyframeLoopMessage</code>（ms_fusion 侧）携带：pose、
+    <code>points_3d</code> / <code>points_2d_uv</code> / <code>points_2d_norm</code> / <code>point_ids</code>、
+    <code>bow_keypoints</code> / <code>bow_descriptors</code>、<code>landmark_descriptors</code>
+    （及外参 <code>tic</code>/<code>ric</code>）。loop 节点组装成上述 <code>KeyFrame</code>。
+  </p>
+  <div class="callout warn">
+    库超限时 <code>releaseLoopRetrievalData()</code> 释放
+    <code>bow_descriptors</code> / <code>bow_keypoints</code> / <code>image</code>。
+    词直方图已在 Database 倒排里，检索仍可用；几何验证所需描述子需在释放前完成或另有保留策略。
+  </div>
+
+  <h2 id="two-rt">16.4 两套 RT、漂移假设与如何应用</h2>
+  <p>
+    回环侧实质有两套变换：① 几何验证得到的<strong>相对回环 RT</strong>（进位姿图边）；
+    ② 图优化后得到的<strong>全局 drift</strong>（纠正实时里程计）。
+    跨序列时另有一次 <code>w_r_vio / w_t_vio</code> 对齐。图像一直连续也能回环，不必切 sequence。
+  </p>
+
+  <h3>① 相对回环 RT（<code>loop_info</code>）</h3>
+  <ul>
+    <li><strong>来源</strong>：Mutual NN → PnP-RANSAC 得旧帧世界位姿 →
+      \(R_\text{rel}=R_\text{PnP}^\top R_\text{cur}\)，
+      \(t_\text{rel}=R_\text{PnP}^\top(t_\text{cur}-t_\text{PnP})\)，再加相对 yaw；
+      过门限写入 <code>loop_info[0..7]</code>。</li>
+    <li><strong>用途</strong>：位姿图 <strong>loop edge</strong>；不直接改 <code>/odometry</code>。</li>
+  </ul>
+
+  <h3>② 全局 drift（<code>r_drift / t_drift</code>）</h3>
+  <ul>
+    <li><strong>来源</strong>：位姿图优化后，用当前 KF 的优化位姿对 VIO 位姿：
+      有 IMU 时 4DoF（只估 yaw）；无 IMU 时 6DoF。
+      含义 \(P_\text{corr}=r_\text{drift}\,P_\text{vio}+t_\text{drift}\)。</li>
+    <li><strong>用途</strong>：刷新优化窗口之后关键帧的显示位姿；
+      <code>vio_callback</code> 里纠正高频 <code>/odometry_vio</code> → <code>/odometry</code>。
+      <strong>不写回</strong> ms_fusion 滑窗。</li>
+  </ul>
+
+  <h3>漂移假设：不是「默认切成很多段乱飘」</h3>
+  <table>
+    <thead><tr><th></th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td><strong>同序列（常见）</strong></td>
+        <td>VIO 在同一坐标系连续递推，误差慢慢累积；闭环后用<strong>一个</strong>全局刚体 drift 近似纠偏。
+          图像一直连续也能回环（DBoW 找较早 KF → NN+PnP → 图优化 → 更新 drift），<strong>不需要</strong>切 sequence。</td></tr>
+      <tr><td><strong>跨序列（例外）</strong></td>
+        <td>图像间断 / <code>new_sequence()</code> 时 <code>sequence++</code>（轨迹段号，不是 frame id）。
+          新段像另起坐标系；第一次跨段闭环用 <code>w_r_vio/w_t_vio</code> 把<strong>整段</strong>新序列刚体对齐到旧世界，
+          并置 <code>sequence_loop[seq]=1</code>（只做一次）。</td></tr>
+    </tbody>
+  </table>
+
+  <h3>跨序列对齐怎么定义</h3>
+  <ol>
+    <li>旧帧位姿 ∘ 相对回环 → 当前帧<strong>应在旧世界</strong>的位姿 \((R_w^\text{cur}, t_w^\text{cur})\)</li>
+    <li>求 \((R_w, t_w)\) 使本地 VIO 贴上该目标（有 IMU 时 \(R_w\) 只含 yaw）</li>
+    <li>写入 <code>w_r_vio/w_t_vio</code>，对本序列已有 KF 全部施加；之后入图与 <code>vio_callback</code> 先乘 <code>w_*</code> 再乘 drift</li>
+  </ol>
+
+  <h3>更新 drift 后，谁会被改？</h3>
+  <table>
+    <thead><tr><th>对象</th><th>行为</th></tr></thead>
+    <tbody>
+      <tr><td>已发布的历史 <code>/odometry</code></td><td><strong>不回写</strong>、不重放</td></tr>
+      <tr><td>优化窗口内关键帧 <code>[earliest_loop … cur]</code></td>
+        <td>直接写 Ceres 结果到 <code>T_w_i/R_w_i</code>（不是旧 pose×新 drift）</td></tr>
+      <tr><td><code>cur</code> 之后的关键帧</td>
+        <td>新 drift × 其 VIO → 刷新显示位姿</td></tr>
+      <tr><td>之后的实时 VIO</td><td>只用<strong>最新</strong> drift（及如有则 <code>w_*</code>）</td></tr>
+      <tr><td>各帧 <code>vio_T/R</code>（同序列）</td><td>一般<strong>不改</strong>；改的是优化位姿 + 全局 drift</td></tr>
+    </tbody>
+  </table>
+  <div class="callout ok">
+    <strong>一句话</strong>：① 相对 RT 钉住「两帧该差多少」进图；② drift 把图结果压成刚体挂到「从现在起」的高频 VIO。
+    窗口内历史靠优化直接改 pose，不是整条旧轨迹再乘一遍新 RT。
+  </div>
+
+  <h3>输出层平滑（<code>output_smooth_tau_s</code>，默认关闭）</h3>
+  <p>
+    reloc 落地或位姿图优化会让输出位姿一次性阶跃。设 <code>output_smooth_tau_s = τ &gt; 0</code> 后，
+    发布的 <code>/odometry</code> = 未平滑位姿 + 残差：落地那一帧吸收阶跃（输出保持连续），
+    之后残差按 <code>exp(-dt/τ)</code> 衰减（<code>dt</code> 取 <code>/odometry_vio</code> 的消息时间戳；
+    τ=2 s 约 6 s 消除 95%）。
+  </p>
+  <ul>
+    <li>同一把锁内<strong>先衰减旧残差、再吸收新阶跃</strong>：<code>dp = p_old + dp_decayed − p_new</code>，
+      <code>dyaw = wrap(yaw_old + dyaw_decayed − yaw_new)</code>；新吸收的部分当帧不再衰减。连续两次校正自然叠加。</li>
+    <li>启动后第一次 reloc 落地、<code>/reloc</code> 手动触发：显式复位标记（与锚点更新同锁），残差清零、直接输出新的绝对位姿。</li>
+    <li>时间戳重复不衰减；回退时重置时间基准，不会出现负 dt。状态只由 <code>/odometry_vio</code> 发布路径推进。</li>
+    <li>跳变验收、ACK、锚点、位姿图都仍使用<strong>未平滑位姿</strong>；平滑只影响发布的 <code>/odometry</code>。</li>
+    <li>本节点不发布 TF。消息里的 <code>twist.linear</code> 是 <code>/odometry_vio</code> 的世界系速度，
+      经 <code>w_r_vio</code>、<code>r_drift</code>（含 reloc 外层变换）旋转到修正后的世界系（与位置同一旋转，无平移）；
+      平滑开启时仍按未平滑的修正旋转，<strong>不是</strong>平滑位置的导数，衰减期间两者相差约 |残差|/τ。上游未填角速度。</li>
+    <li>代价：校正后约 3τ 内输出相对未平滑位姿有滞后，heading 尚未收敛时下游会看到带残差的朝向。
+      离线仿真（τ=2 s）RPE 平移 0.19→0.14 m 等，整体 ATE/RMSE 几乎不变，这不代表滞后期内没有偏差。</li>
+  </ul>
+
+  <h3>Mermaid：两套 RT 与应用路径</h3>
+  <div class="mermaid-box">
+    <pre class="mermaid">
+flowchart TB
+  subgraph VERIFY["几何验证"]
+    NN["Mutual NN"] --> PnP["PnP-RANSAC"]
+    PnP --> REL["① 相对回环 RT<br/>loop_info: t_rel + q_rel + yaw"]
+  end
+
+  subgraph PG["位姿图"]
+    REL -->|loop edge| CERES["Ceres 4DoF / 6DoF"]
+    SEQ_EDGE["同序列：相邻 VIO 相对边"] --> CERES
+  end
+
+  subgraph APPLY_KF["写回关键帧"]
+    CERES --> WIN["窗口内 KF<br/>直接写优化 T_w/R_w"]
+    CERES --> DRIFT["② 算 r_drift / t_drift<br/>P_corr = R_d P_vio + t_d"]
+    DRIFT --> AFTER["cur 之后 KF<br/>新 drift × VIO → 显示位姿"]
+    WIN --> PATH["updatePath 重画"]
+    AFTER --> PATH
+  end
+
+  subgraph LIVE["实时里程计 · 不回写历史消息"]
+    VIO["/odometry_vio"] --> WALIGN{"跨序列已对齐?"}
+    WALIGN -->|是| W["先 × w_r_vio / w_t_vio"]
+    WALIGN -->|否| D
+    W --> D["再 × r_drift / t_drift"]
+    D --> ODOM["发布 /odometry"]
+  end
+
+  subgraph XSEQ["仅图像间断时"]
+    NEW["new_sequence → sequence++"] --> FIRST{"首次跨段闭环?"}
+    FIRST -->|是| SHIFT["由 ① + 旧帧位姿<br/>算 w_r_vio / w_t_vio"]
+    SHIFT --> ALL["整段新序列 KF 对齐"]
+    ALL --> FLAG["sequence_loop[seq]=1"]
+  end
+
+  DRIFT -.->|刷新| D
+  REL -.->|跨段首次| SHIFT
+    </pre>
+  </div>
+  <p class="timing-note">
+    <code>sequence</code> = 轨迹段号；<code>KeyFrame::index</code> = 全局关键帧 id。二者不要混淆。
+  </p>
+
+  <h2 id="ivps-pipeline">17. 从 IVPS 到回环：全链路</h2>
+  <p>
+    节点内文字 = <strong>步骤 → 中间结果 · timing 示例</strong>。视觉前端见下图；
+    <strong>多传感器融合后端</strong>展开见 <a href="#fusion-mermaid">§17.0</a>；
+    字段级说明见 <a href="#step-intermediates">§17.1</a>。
+  </p>
+  <p class="timing-note">
+    Timing 数值取自一次实测窗口（frontend e2e≈116.5ms · backend KF≈145.2ms · loop add_kf≈124.9ms · vio≈0.9ms@100Hz）。
+    <code>npu_diag</code> 已含于 extract/loop_desc，图中仅作标注勿再加总。
+  </p>
+  <div class="mermaid-box">
+    <pre class="mermaid">
+flowchart TB
+  subgraph HW["① 板端 / 传感器"]
+    CAM["MIPI 双目"] --> IVPS["IVPS 金字塔<br/>GRP 7/8 灰度 · 9/10 RGB"]
+    IMU_HW["IMU"] --> IMUM["ImuMeasurement"]
+    WH_HW["轮速 odom"] --> ODOM_M["OdomMeasurement"]
+  end
+
+  subgraph GRAB_S["② 取图 · source=9.1ms"]
+    GRAB["GetChnFrame ~10Hz<br/>timing: grab=0.1ms · release=0.2ms"]
+    RESIZE["转灰度 + resize/pad → 640×384<br/>timing: map+convert=8.7ms"]
+    MM["processImageMessage<br/>SCORE: queue=20.6ms · process=86.9ms<br/>e2e=116.5ms · fps≈9.8"]
+  end
+
+  subgraph TRACK["③ Tracking · track.process=86.0ms"]
+    KLT["金字塔 + KLT<br/>pyramid=15.0ms<br/>klt=16.1ms temporal=10.5 stereo+gate=5.6<br/>tracks final≈25"]
+    EXT["extractStereoFeatures NPU<br/>extract=18.4ms<br/>npu detect=33.0 desc_map=23.6<br/>new_stereo in≈48 → epi≈3.6"]
+    BOW["refreshLoopDescriptors<br/>loop_desc=36.5ms 含 landmark<br/>dense≈100"]
+    LM["refreshLoopLandmarkDescriptors<br/>desc_sample=3.5ms<br/>landmark≈25"]
+    VM["VisionMeasurement → 后端队列<br/>pack=0.8ms · loop_c prep≈0"]
+  end
+
+  subgraph QUEUES["④ 后端队列"]
+    IQ["imu_measurement_deque_"]
+    OQ["odom_measurement_deque_"]
+    VQ["vision_measurement_deque_"]
+  end
+
+  subgraph INS["⑤ INS 线程 · 高频 /odometry_vio"]
+    MECH{"FUSIONING?"}
+    STRAP["insMechanization / redo<br/>is_optimized_ 回灌"]
+    IWIN["ins_mech_window_"]
+    ODOM_PUB["→ /odometry_vio<br/>loop.vio 侧消费 ~100Hz"]
+  end
+
+  subgraph FUS["⑥ 融合 · SCORE total=145.2ms · kf_hz≈4.5 · accept 50%"]
+    SYNC_F["getCurrVisionMeasurement<br/>select.wait_outside=17.7ms"]
+    SM["INITIALIZING→INIT_OPT→FUSIONING"]
+    KFNODE["关键帧 BA<br/>prep=3.5 preint=3.4<br/>opt=116.2 solve=110.5 iters=11<br/>marg=17.1 · states=7"]
+    EST["est_odom · odom_pub=1.6ms"]
+    KFPUB["publishKeyframeLoop<br/>loop_c=6.7 collect=0.1 pack=0.3 pub=6.3<br/>points≈25 · bow=100"]
+  end
+
+  subgraph LOOP["⑦ ms_fusion_loop · SCORE total=124.9ms · kf_hz≈1"]
+    LSYNC["同步+解码 prep=1.0ms<br/>desc_decode=0.7 · construct=0.1<br/>skip stride/motion"]
+    LDET["DBoW+验证 add_kf=123.8ms<br/>dbow=57.3 tf=19.5 query=37.8<br/>verify=66.3 nn=26.2 pnp=20.6<br/>cand=4 · hit=1 ok=0 fail=1"]
+    LOPT["optimize4/6DoF<br/>本窗无 optimize行<br/>因几何验证 fail"]
+    RECT["vio_callback<br/>vio total=0.9ms correct≈0.3<br/>odom_pub≈0.7 · hz≈100<br/>→ /odometry"]
+  end
+
+  IVPS --> GRAB --> RESIZE --> MM --> KLT
+  KLT --> EXT --> VM
+  KLT --> BOW --> LM --> VM
+  IMUM --> IQ
+  ODOM_M --> OQ
+  VM --> VQ
+  IQ --> MECH
+  MECH -->|yes| STRAP --> IWIN --> ODOM_PUB
+  MECH -->|no| IWIN
+  VQ --> SYNC_F --> SM --> KFNODE
+  IWIN -.->|IMU series| KFNODE
+  OQ -.->|odom series| KFNODE
+  KFNODE -->|is_optimized_| STRAP
+  KFNODE --> EST
+  KFNODE --> KFPUB
+  ODOM_PUB --> RECT
+  KFPUB --> LSYNC --> LDET --> LOPT --> RECT
+    </pre>
+  </div>
+
+  <h2 id="fusion-mermaid">17.0 融合后端细节（Mermaid）</h2>
+  <p>
+    双线程：<strong>INS</strong> 做高频 IMU 机械编排并发布 <code>/odometry_vio</code>；
+    <strong>Fusion</strong> 以视觉关键帧为门控做滑窗 BA，发布 <code>ms_fusion/est_odom</code> 与关键帧回环包。
+    轮速不参与 INS 递推，只在关键帧间作为 <code>OdomFactor</code>。
+  </p>
+  <p class="timing-note">
+    数值同实测窗口：backend SCORE total=145.2ms（prep=3.5 · opt=116.2 · marg=17.1 · loop_pub=6.7 · odom_pub=1.6）·
+    accept=5/attempt=10 · kf_hz≈4.5 · wait_outside=17.7ms。
+  </p>
+  <div class="mermaid-box">
+    <pre class="mermaid">
+flowchart TB
+  subgraph INGEST["传感器入队"]
+    IMU["IMU → ImuMeasurement"] --> IQ["imu_measurement_deque_"]
+    WH["Wheel → OdomMeasurement"] --> OQ["odom_measurement_deque_"]
+    VIS["Tracking → VisionMeasurement<br/>frontend e2e≈116.5ms 已完成"] --> VQ["vision_measurement_deque_"]
+  end
+
+  subgraph INS_T["runInsThread · 高频 → /odometry_vio"]
+    IQ --> WAIT_I["sem 唤醒 / pop IMU"]
+    WAIT_I --> PUSH_W["ins_mech_window_ 追加"]
+    PUSH_W --> FQ{"FUSIONING?"}
+    FQ -->|否| BUF["仅缓存 ≤2000"]
+    FQ -->|是| OPTF{"is_optimized_?"}
+    OPTF -->|是| REDO["redoInsMechanization<br/>从 BA 状态重推"]
+    OPTF -->|否| MECH["insMechanization"]
+    REDO --> IWIN["ins_mech_window_"]
+    MECH --> IWIN
+    IWIN --> PUB_O["→ /odometry_vio<br/>loop.vio ~0.9ms@100Hz"]
+  end
+
+  subgraph FUS_T["runFusionThread · SCORE total=145.2ms"]
+    VQ --> SYNC["getCurrVisionMeasurement<br/>select.wait_outside=17.7ms"]
+    SYNC --> RELOC["tryConsumeReloc<br/>本窗 reloc=0.0ms"]
+    RELOC --> ST{"ms_fusion_state_"}
+
+    ST -->|INITIALIZING| INIT["Initializer"]
+    INIT --> PRIOR["constructPriorInfo"]
+    PRIOR --> FEAT0["parallax + triangulate"]
+    FEAT0 --> S1["→ INIT_OPTIMIZING"]
+
+    ST -->|INIT_OPT / FUSIONING| AN["addNewMeasurementTimeNode"]
+    AN --> KF{"Δt≥keyframe_min_interval_s?<br/>accept_pct=50% · reject=5"}
+    KF -->|否 reject_total=0.5ms| EST_ONLY["仅 est_odom"]
+    KF -->|是| TRI["triangulate · tri≈0.0ms"]
+    TRI --> ATN["addNewTimeNode"]
+    ATN --> PRE_IMU["IMU Preintegration<br/>prep.preint=3.4ms<br/>imu_preint=6"]
+    ATN --> PRE_OD["Odom Preintegration<br/>odom_preint=6"]
+    PRE_IMU --> STNEW["新 IntegrationStateData"]
+    PRE_OD --> STNEW
+
+    STNEW --> PHASE{"state?"}
+    PHASE -->|INIT_OPT| IO["initOptimize"]
+    PHASE -->|FUSIONING| OO["optimize<br/>opt=116.2ms<br/>build=2.9 · solve=110.5 · post=0.1<br/>iters=11 · residuals≈178"]
+    IO --> FULL{"size==window?"}
+    FULL -->|是| IM["initMarginalize"]
+    FULL -->|否| SKIPM["不满窗"]
+    OO --> MARG["marginalize · marg=17.1ms<br/>states=7 · landmarks≈40"]
+    IO --> FLAG["is_optimized_=true"]
+    OO --> FLAG
+    IM --> KFL
+    SKIPM --> KFL
+    MARG --> KFL["publishKeyframeLoop"]
+    KFL --> PACK["collect+pack<br/>collect=0.1 · pack=0.3<br/>points≈25 · bow=100"]
+    PACK --> ROSKF["ROS pub=6.3ms<br/>SCORE.loop_pub=6.7ms"]
+    IO --> EST
+    OO --> EST
+    EST_ONLY --> EST["est_odom · odom_pub=1.6ms"]
+    KFL --> EST
+  end
+
+  subgraph BA_DETAIL["滑窗 · 本窗 states=7"]
+    PARAM["pose+mix · inv_depth"]
+    FAC["Preint / Vision / Odom / Marg"]
+  end
+
+  IWIN -.->|系列采样| PRE_IMU
+  OQ -.->|系列采样| PRE_OD
+  FLAG -.-> REDO
+  PARAM --- FAC
+  OO -.-> PARAM
+  IO -.-> PARAM
+    </pre>
+  </div>
+
+  <div class="callout">
+    <strong>两路里程计</strong>：
+    INS 高频 <code>/odometry_vio</code>（loop 的 <code>raw_odometry_topic</code>）=
+    机械编排递推；融合低频 <code>ms_fusion/est_odom</code> =
+    滑窗优化后的窗口尾状态。BA 完成后置 <code>is_optimized_</code>，
+    INS 用 <code>redoInsMechanization</code> 从优化状态重推，避免两路漂移分叉。
+  </div>
+  <div class="callout warn">
+    关键帧判据名义是 parallax，实现为<strong>纯时间门限</strong>
+    <code>Δt ≥ optimizer.keyframe_min_interval_s</code>（首帧必为关键帧）。
+  </div>
+
+  <h3>阶段概览</h3>
+  <p>
+    板端编译打开 <code>MSF_USE_AXERA_IVPS</code> 时，不订阅相机 ROS 图，而是定时从
+    Axera IVPS 共享内存拉帧（典型配置：左 GRP=7、右 GRP=8，chn0 灰度）。
+    PC / 非 IVPS 走 ROS compressed 回调后汇入同一 <code>MeasurementManager</code>。
+  </p>
+
+  <h2 id="step-intermediates">17.1 逐步中间结果</h2>
+  <p class="lede" style="margin-top:0">
+    下面按执行顺序列出每一步的<strong>输入 → 处理 → 中间结果</strong>。尺寸以默认配置为例（1920×1080 标定 → downsize×3 → 640×360 + 底 pad 24 → 640×384）。
+  </p>
+
+  <!-- STEP 1 -->
+  <div class="step-block" id="s1">
+    <div class="step-head">
+      <span class="step-num">1</span>
+      <span class="step-title">IVPS 同步取立体帧</span>
+      <span class="step-fn">msf_ivps_grab_sync_stereo · imageGrabTimerCallback</span>
+    </div>
+    <div class="step-body">
+      <div class="io-label">输入</div>
+      <div class="io-box">
+        IVPS 通道配置：左 <code>ivps_left_grp</code>（如 7）、右 <code>ivps_right_grp</code>（如 8），chn=0；定时周期 <code>image_grab_interval_ms</code>（如 100ms）
+      </div>
+      <div class="io-label">中间结果</div>
+      <div class="io-box out">
+        <ul>
+          <li>左右目 IVPS frame handle + mmap 缓冲区（硬件金字塔输出的灰度图）</li>
+          <li>帧时间戳（后续会加 <code>td_cam_to_imu</code>）</li>
+        </ul>
+      </div>
+      <div class="io-label">Timing 日志</div>
+      <div class="io-box timing">
+        <span class="timing-tag">frontend.source.grab</span>
+        <span class="timing-tag">frontend.source.release</span>
+        字段：<code>FrameFrontendTiming::ivps_tracking_grab_ms / release_ms</code><br/>
+        <span class="timing-ex">例：grab=0.1ms · release=0.2ms</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 2 -->
+  <div class="step-block" id="s2">
+    <div class="step-head">
+      <span class="step-num">2</span>
+      <span class="step-title">转灰度 + 缩放到 tracking canvas</span>
+      <span class="step-fn">msf_ivps_frame_to_tracking_gray · msf_ivps_apply_tracking_resize</span>
+    </div>
+    <div class="step-body">
+      <div class="io-label">输入</div>
+      <div class="io-box">IVPS mmap 原始缓冲；<code>downsize_factor=3</code>，<code>drop_bottom_feature_rows=24</code></div>
+      <div class="io-label">中间结果</div>
+      <div class="io-box out">
+        <ul>
+          <li><code>image_gray_left</code> / <code>image_gray_right</code>：<strong>640×384</strong> CV_8UC1（顶部 640×360 为有效内容，底部 24 行零填充）</li>
+          <li>内参同步缩放：fx/fy/cx/cy 按 content 缩放（cy 不因底 pad 改变）</li>
+          <li>封装为图像消息 → <code>sendImageMessageToManager</code></li>
+        </ul>
+      </div>
+      <div class="io-label">Timing 日志</div>
+      <div class="io-box timing">
+        <span class="timing-tag">frontend.source.map+convert</span>
+        <span class="timing-tag">frontend.source.total / tracking</span>
+        字段：<code>ivps_tracking_convert_ms</code>、<code>input_source_ms</code><br/>
+        <span class="timing-ex">例：map+convert=8.7ms · source total=9.1ms（含 grab/release）</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 3 -->
+  <div class="step-block" id="s3">
+    <div class="step-head">
+      <span class="step-num">3</span>
+      <span class="step-title">MeasurementManager 入队处理</span>
+      <span class="step-fn">MeasurementManager::processImageMessage</span>
+    </div>
+    <div class="step-body">
+      <div class="io-label">输入</div>
+      <div class="io-box">左右灰度图 + 原始 stamp</div>
+      <div class="io-label">中间结果</div>
+      <div class="io-box out">
+        <ul>
+          <li>校正后时间戳 <code>t' = t + td_cam_to_imu_</code></li>
+          <li>若尺寸已是 tracking 尺寸则跳过再缩放</li>
+          <li>调用 <code>Tracking::processImage</code>；可选并行 reloc 取 GRP 9/10 RGB</li>
+        </ul>
+      </div>
+      <div class="io-label">Timing 日志</div>
+      <div class="io-box timing">
+        <span class="timing-tag">frontend.SCORE.queue</span>
+        <span class="timing-tag">frontend.SCORE.process</span>
+        <span class="timing-tag">frontend.queue</span>
+        字段：<code>input_queue_wait_ms</code>、<code>frontend_process_ms</code>、<code>backend_enqueue_ms</code><br/>
+        <span class="timing-ex">例：queue=20.6ms · process=86.9ms · backend_enqueue=0.0ms</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 4 -->
+  <div class="step-block" id="s4">
+    <div class="step-head">
+      <span class="step-num">4</span>
+      <span class="step-title">光流金字塔 + KLT 跟踪</span>
+      <span class="step-fn">Tracking::processImage · trackFeatures</span>
+    </div>
+    <div class="step-body">
+      <div class="io-label">输入</div>
+      <div class="io-box">当前/上一帧左右灰度；上一帧特征 <code>pts_left_prev_</code> + ids</div>
+      <div class="io-label">中间结果</div>
+      <div class="io-box out">
+        <ul>
+          <li>左右目光流金字塔（<code>pyramid_levels</code>，如 5 层）</li>
+          <li>跟踪成功点：<code>pts_left_curr_</code>、<code>pts_right_curr_</code>、对应 <code>ids_curr_</code></li>
+          <li>剔除：KLT 误差、<code>fb_error_threshold</code> 前后向误差、对极 / <code>loop_distance_threshold</code> 环形匹配失败点</li>
+          <li>不足 <code>max_num_features</code> 时触发新特征提取</li>
+        </ul>
+      </div>
+      <div class="io-label">Timing 日志</div>
+      <div class="io-box timing">
+        <span class="timing-tag">frontend.process.pyramid</span>
+        <span class="timing-tag">frontend.core.klt</span>
+        <span class="timing-tag">frontend.klt.temporal / stereo+gate</span>
+        <span class="timing-tag">frontend.tracks</span>
+        字段：<code>track_pyramid_ms</code>、<code>track_loop_ms</code>（环行 KLT，非回环）、
+        <code>track_loop_frame_match_ms</code>、<code>track_loop_stereo_filter_ms</code><br/>
+        计数：<code>prev/supp/left/right/stereo/final</code><br/>
+        <span class="timing-ex">例：pyramid=15.0ms · klt=16.1ms（temporal=10.5 · stereo+gate=5.6）· final≈25</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 5 -->
+  <div class="step-block" id="s5">
+    <div class="step-head">
+      <span class="step-num">5</span>
+      <span class="step-title">立体特征提取（NPU）</span>
+      <span class="step-fn">extractStereoFeatures · XFeat/SuperPoint detectWithDescriptors</span>
+    </div>
+    <div class="step-body">
+      <div class="io-label">输入</div>
+      <div class="io-box">左目 640×384 灰度；模型如 <code>xfeat_npu1-full-384.axmodel</code></div>
+      <div class="io-label">中间结果</div>
+      <div class="io-box out">
+        <ul>
+          <li>左目检测点 + 描述子（score NMS / grid top-k 后 ≤ <code>max_num_features</code>，如 100）</li>
+          <li>左→右 KLT 匹配 + 过滤后的立体对应点</li>
+          <li>分配新 feature id，并入 <code>pts_left_curr_</code> / <code>ids_curr_</code></li>
+          <li>写入 <code>VisionMeasurement.track_feat_info</code>（供后端滑窗用）</li>
+        </ul>
+      </div>
+      <div class="io-label">Timing 日志</div>
+      <div class="io-box timing">
+        <span class="timing-tag">frontend.core.extract</span>
+        <span class="timing-tag">frontend.npu_diag</span>
+        <span class="timing-tag">frontend.detect</span>
+        <span class="timing-tag">frontend.new_stereo</span>
+        <span class="timing-tag">[tracking] …</span>
+        字段：<code>track_extract_ms</code> + NPU 分解 <code>pre/infer/post/desc_map</code>；
+        计数 <code>selected/npu_raw/grid</code>、<code>stereo_in/l2r/fb/epi</code><br/>
+        <span class="timing-ex">例：extract=18.4ms · npu detect=33.0（desc_map=23.6 为主）· new_stereo in=47.9→epi=3.6<br/>
+        [tracking] npu_total_ms≈37–39 · reject_fb 很大（立体过滤主因）</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 6 -->
+  <div class="step-block" id="s6">
+    <div class="step-head">
+      <span class="step-num">6</span>
+      <span class="step-title">密集回环检索描述子（DBoW）</span>
+      <span class="step-fn">Tracking::refreshLoopDescriptorsFromCurrent</span>
+    </div>
+    <div class="step-body">
+      <div class="io-label">输入</div>
+      <div class="io-box"><code>image_gray_left_curr_</code>；同一 NPU 检测器</div>
+      <div class="io-label">中间结果</div>
+      <div class="io-box out">
+        <ul>
+          <li><code>last_loop_keypoints_</code>：密集像素坐标（再 detect 一次，可与 VIO 点集不同）</li>
+          <li><code>last_loop_descriptors_</code>：CV_32FC1，形状 <strong>N<sub>bow</sub> × D</strong>（D 由模型决定）</li>
+          <li>已滤除 y ≥ H−<code>drop_bottom_feature_rows</code> 的点（底 pad 区）</li>
+          <li>缓存的 descriptor map 供下一步采样（同帧有效）</li>
+        </ul>
+      </div>
+      <div class="io-label">Timing 日志</div>
+      <div class="io-box timing">
+        <span class="timing-tag">frontend.core.loop_desc</span>
+        <span class="timing-tag">frontend.loop_c.dense</span>
+        字段：<code>track_loop_descriptor_ms</code>（dense BoW + landmark 刷新合计）；
+        计数 <code>loop_closure_desc_rows</code> → 日志 <code>dense</code><br/>
+        <span class="timing-ex">例：loop_desc=36.5ms · dense=100.0（≈max_num_features）</span>
+        <div class="callout warn" style="margin:.6rem 0 0">
+          <code>npu_diag</code> 是诊断分解，已包含在 <code>extract</code> 或 <code>loop_desc</code> 内，
+          <strong>不要</strong>与 core 各子项再相加。当前日志 calls=1.0 表示本窗平均每帧约 1 次 NPU（loop 再 detect 与 extract 可能合并统计窗口内）。
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 7 -->
+  <div class="step-block" id="s7">
+    <div class="step-head">
+      <span class="step-num">7</span>
+      <span class="step-title">VIO 路标描述子采样（PnP）</span>
+      <span class="step-fn">Tracking::refreshLoopLandmarkDescriptorsFromCurrent</span>
+    </div>
+    <div class="step-body">
+      <div class="io-label">输入</div>
+      <div class="io-box">上一步非空的 dense descs；当前跟踪点 <code>pts_left_curr_</code> + <code>ids_curr_</code></div>
+      <div class="io-label">中间结果</div>
+      <div class="io-box out">
+        <ul>
+          <li><code>last_loop_landmark_ids_</code>：与 VIO feature id 对齐</li>
+          <li><code>last_loop_landmark_keypoints_</code>：采样像素（≈ <code>pts_left_curr_</code>）</li>
+          <li><code>last_loop_landmark_descriptors_</code>：CV_32FC1，<strong>N<sub>vio</sub> × D</strong>（在 VIO 像素上 <code>sampleDescriptors</code>）</li>
+        </ul>
+      </div>
+      <div class="io-label">Timing 日志</div>
+      <div class="io-box timing">
+        <span class="timing-tag">frontend.npu_diag.desc_sample</span>
+        <span class="timing-tag">frontend.loop_c.landmark</span>
+        <span class="timing-tag">[tracking] loop_retention</span>
+        字段：<code>track_descriptor_sample_ms</code>；计数 <code>loop_closure_landmark_desc_rows</code><br/>
+        <span class="timing-ex">例：desc_sample=3.5ms · landmark=25.0 · loop_retention≈85–88%</span>
+      </div>
+      <div class="callout" style="margin-bottom:0">
+        两套描述子维度 D 相同，但行数与点集不同：BoW 是密集检测点，landmark 是 VIO 跟踪点。
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 8 -->
+  <div class="step-block" id="s8">
+    <div class="step-head">
+      <span class="step-num">8</span>
+      <span class="step-title">写入 VisionMeasurement 并推后端</span>
+      <span class="step-fn">getLoopDescriptors · getLoopLandmarkDescriptors · pushVisionMeasurement</span>
+    </div>
+    <div class="step-body">
+      <div class="io-label">中间结果 — VisionMeasurement 关键回环字段</div>
+      <div class="io-box out">
+        <ul>
+          <li><code>has_loop_descriptors</code> / <code>loop_keypoints</code> / <code>loop_descriptors</code></li>
+          <li><code>has_loop_landmark_descriptors</code> / <code>loop_landmark_ids</code> / <code>loop_landmark_keypoints</code> / <code>loop_landmark_descriptors</code></li>
+          <li>另含：<code>track_feat_info</code>、可选 reloc、timestamp</li>
+        </ul>
+      </div>
+      <div class="io-label">Timing 日志</div>
+      <div class="io-box timing">
+        <span class="timing-tag">frontend.track.pack</span>
+        <span class="timing-tag">frontend.SCORE.e2e</span>
+        <span class="timing-tag">frontend.loop_c.prep</span>
+        字段：<code>track_pack_ms</code>（getFeatInfo）、<code>frontend_e2e_ms</code>=source→backend-ready、
+        <code>loop_closure_desc_prep_ms</code><br/>
+        <span class="timing-ex">例：pack=0.8ms · e2e=116.5ms · prep=0.0ms · dense=100 · landmark=25</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 9 -->
+  <div class="step-block" id="s9">
+    <div class="step-head">
+      <span class="step-num">9</span>
+      <span class="step-title">融合后端：关键帧 + 预积分 + 滑窗 BA</span>
+      <span class="step-fn">runFusionThread · addNewMeasurementTimeNode · optimize · 详见 §17.0</span>
+    </div>
+    <div class="step-body">
+      <div class="io-label">输入</div>
+      <div class="io-box">
+        <code>VisionMeasurement</code>；<code>ins_mech_window_</code> IMU 序列；可选轮速队列；状态机
+        INITIALIZING / INIT_OPTIMIZING / FUSIONING
+      </div>
+      <div class="io-label">中间结果</div>
+      <div class="io-box out">
+        <ul>
+          <li><strong>时间同步</strong>：等 IMU（及轮速）stamp 覆盖视觉时刻 → <code>vision_measurement_cur</code></li>
+          <li><strong>关键帧判定</strong>：首帧或 Δt ≥ <code>keyframe_min_interval_s</code>（纯时间，非视差）</li>
+          <li><strong>非关键帧</strong>：不更新路标；只发 <code>ms_fusion/est_odom</code></li>
+          <li><strong>关键帧</strong>：<code>triangulate</code>（立体 depth∈(1,100]）→
+            <code>addNewTimeNode</code> 并行 IMU/轮速 Preintegration →
+            新 <code>IntegrationStateData</code>（pose7 + mix9）入窗</li>
+          <li><strong>BA</strong>：initOptimize / optimize（pose、v/bg/ba、inv_depth；Preint/Vision/Odom/Marg 因子）</li>
+          <li><strong>边缘化</strong>：满窗后 marg 最旧帧 → <code>last_marginalization_info_</code></li>
+          <li><strong>桥接 INS</strong>：置 <code>is_optimized_</code>，INS 线程 <code>redoInsMechanization</code></li>
+          <li><strong>高频里程计</strong>（并行）：INS <code>/odometry_vio</code>，非本步直接产出</li>
+        </ul>
+      </div>
+      <div class="io-label">Timing 日志</div>
+      <div class="io-box timing">
+        <span class="timing-tag">backend.SCORE</span>
+        <span class="timing-tag">backend.select</span>
+        <span class="timing-tag">backend.prep</span>
+        <span class="timing-tag">backend.optimize</span>
+        <span class="timing-tag">backend.state</span>
+        字段：<code>queue_wait_ms</code>、<code>feature_parallax_ms</code>、<code>triangulate_ms</code>、
+        <code>preintegration_ms</code>、<code>optimize_{build,solve,post}_ms</code>、<code>marginalize_ms</code>、
+        <code>estimated_odom_publish_ms</code><br/>
+        <span class="timing-ex">例：total=145.2 · prep=3.5（preint=3.4）· opt=116.2（solve=110.5 · iters=11）· marg=17.1<br/>
+        accept=5/attempt=10 → accept_pct=50%（≈每两帧一关键帧）· states=7 · residuals=178</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 10 -->
+  <div class="step-block" id="s10">
+    <div class="step-head">
+      <span class="step-num">10</span>
+      <span class="step-title">关键帧点收集与几何对齐过滤</span>
+      <span class="step-fn">MsFusionManager::publishKeyframeLoop · collectKeyframePoints</span>
+    </div>
+    <div class="step-body">
+      <div class="io-label">输入</div>
+      <div class="io-box">最新 VIO state；当前帧 loop_* 描述子；FeatureManager 地图点</div>
+      <div class="io-label">中间结果 — KeyframeLoopMessage（过滤前→后）</div>
+      <div class="io-box out">
+        <ul>
+          <li><strong>位姿</strong>：<code>position</code> / <code>orientation</code>（base_link in world，w0）</li>
+          <li><strong>收集阶段</strong>：<code>points_3d</code>（先在 w1，再乘 diag(1,-1,-1)→w0）、<code>points_2d_uv</code>、<code>points_2d_norm</code>、<code>point_ids</code></li>
+          <li><strong>对齐过滤</strong>：仅保留 id 能在 <code>loop_landmark_*</code> 找到，且 UV 差 ≤ 0.5px 的点 → 五行数组同索引：
+            <code>points_3d</code>、<code>points_2d_uv</code>、<code>points_2d_norm</code>、<code>point_ids</code>、<code>landmark_descriptors</code></li>
+          <li><strong>检索集不动</strong>：<code>bow_keypoints</code> / <code>bow_descriptors</code>（完整密集集）</li>
+          <li><strong>外参</strong>：<code>tic</code> / <code>ric</code>（base_link←cam0）</li>
+        </ul>
+      </div>
+      <div class="io-label">Timing 日志</div>
+      <div class="io-box timing">
+        <span class="timing-tag">backend.loop_c.collect / pack</span>
+        字段：<code>loop_closure_collect_points_ms</code>、<code>loop_closure_pack_ms</code>；
+        计数 <code>loop_closure_kf_points</code>、<code>loop_closure_bow_rows</code><br/>
+        <span class="timing-ex">例：collect=0.1ms · pack=0.3ms · points=25.2 · bow=100.0</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 11 -->
+  <div class="step-block" id="s11">
+    <div class="step-head">
+      <span class="step-num">11</span>
+      <span class="step-title">ROS 打包发布（同 stamp）</span>
+      <span class="step-fn">MsFusionNode::pubKeyframeLoop · packLoopDescriptorPayload</span>
+    </div>
+    <div class="step-body">
+      <div class="io-label">中间结果 — 四路 ROS 消息（header.stamp 相同）</div>
+      <div class="io-box out">
+        <ul>
+          <li><code>ms_fusion/keyframe_pose</code>：Odometry，frame=world，child=base_link</li>
+          <li><code>ms_fusion/keyframe_point</code>：PointCloud，每点 channel <code>[norm_x, norm_y, u, v, id]</code></li>
+          <li><code>ms_fusion/keyframe_descriptors</code>：Image 32FC1，frame_id=<code>cam0_loop_desc_v2</code>，
+            行布局 <code>[kind, u, v, desc<sub>0..D-1</sub>]</code>；前 N<sub>bow</sub> 行 kind=0，后 N<sub>lm</sub> 行 kind=1；
+            总行数 = N<sub>bow</sub>+N<sub>lm</sub>，宽 = D+3</li>
+          <li><code>ms_fusion/extrinsic</code>：Odometry，base_link←cam0</li>
+        </ul>
+      </div>
+      <div class="io-label">Timing 日志</div>
+      <div class="io-box timing">
+        <span class="timing-tag">backend.SCORE.loop_pub</span>
+        <span class="timing-tag">backend.loop_c.pub / total</span>
+        字段：<code>loop_closure_publish_ms</code>、<code>loop_closure_publish_total_ms</code><br/>
+        <span class="timing-ex">例：pub=6.3ms · loop_c total=6.7ms（SCORE 里 loop_pub=6.7ms）</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 12 -->
+  <div class="step-block" id="s12">
+    <div class="step-head">
+      <span class="step-num">12</span>
+      <span class="step-title">loop 节点同步与解码</span>
+      <span class="step-fn">process · findDescriptorByStamp · decodeDescriptors · parseKeyframePointCloud</span>
+    </div>
+    <div class="step-body">
+      <div class="io-label">输入</div>
+      <div class="io-box">三路关键帧队列 + descriptors 队列（纳秒精确匹配）</div>
+      <div class="io-label">中间结果</div>
+      <div class="io-box out">
+        <ul>
+          <li>同步三元组：(pose, point_cloud, desc_image)[+ 可选 image]</li>
+          <li>skip 过滤后：运动距离、skip_cnt、skip_first_cnt 决定是否继续</li>
+          <li><code>decodeDescriptors</code> → <code>descriptors</code>(BoW)、<code>bow_keypoints</code>、<code>landmark_descriptors</code>、<code>landmark_keypoints</code></li>
+          <li><code>parseKeyframePointCloud</code> → <code>point_3d</code> / <code>point_2d_uv</code> / <code>point_2d_norm</code> / <code>point_id</code></li>
+          <li>对齐失败（点数或 UV 不一致）→ 清空 3D/landmark，<strong>只保留 BoW 检索能力</strong></li>
+        </ul>
+      </div>
+      <div class="io-label">Timing 日志</div>
+      <div class="io-box timing">
+        <span class="timing-tag">loop.SCORE.prep</span>
+        <span class="timing-tag">loop.prep.*</span>
+        <span class="timing-tag">loop.skip</span>
+        <span class="timing-tag">loop.input</span>
+        字段：<code>sync_match_ms</code>、<code>parse_cloud_ms</code>、<code>descriptor_wait_ms</code>、
+        <code>descriptor_decode_ms</code>；skip 计数 first/stride/motion/no_desc/decode<br/>
+        <span class="timing-ex">例：prep≈1.0ms（desc_decode=0.7 为主）· skip stride=3 motion=2<br/>
+        input dense=100 · geom_desc=24 · pts_aligned=24</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 13 -->
+  <div class="step-block" id="s13">
+    <div class="step-head">
+      <span class="step-num">13</span>
+      <span class="step-title">构造 KeyFrame 对象</span>
+      <span class="step-fn">KeyFrame::KeyFrame（在线构造）</span>
+    </div>
+    <div class="step-body">
+      <div class="io-label">中间结果 — KeyFrame 成员</div>
+      <div class="io-box out">
+        <ul>
+          <li><code>time_stamp</code>、<code>index</code>、<code>sequence</code></li>
+          <li><code>vio_T_w_i</code> / <code>vio_R_w_i</code>（及 origin_* 备份）</li>
+          <li><code>bow_descriptors</code>：压成 <strong>CV_8SC1</strong>（×127），省内存；<code>bow_keypoints</code></li>
+          <li><code>landmark_descriptors</code>：仍为 float；<code>point_3d</code> 等几何数组</li>
+          <li><code>has_loop=false</code>，<code>loop_index=-1</code>，<code>loop_info</code> 全 0</li>
+        </ul>
+      </div>
+      <div class="io-label">Timing 日志</div>
+      <div class="io-box timing">
+        <span class="timing-tag">loop.prep.construct</span>
+        字段：<code>keyframe_construct_ms</code><br/>
+        <span class="timing-ex">例：construct=0.1ms</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 14 -->
+  <div class="step-block" id="s14">
+    <div class="step-head">
+      <span class="step-num">14</span>
+      <span class="step-title">DBoW3 候选检索</span>
+      <span class="step-fn">PoseGraph::detectLoopCandidates</span>
+    </div>
+    <div class="step-body">
+      <div class="io-label">输入</div>
+      <div class="io-box">当前 KF 的 <code>bow_descriptors</code>（转 float）</div>
+      <div class="io-label">中间结果</div>
+      <div class="io-box out">
+        <ul>
+          <li><code>BowVector</code>：词袋直方图（Vocabulary::transform）</li>
+          <li><code>QueryResults</code>：top-4，且排除最近 50 帧（<code>maxEligibleDatabaseId</code>）</li>
+          <li>本帧 BoW 已 <code>add</code> 入 Database；<code>loop_database_entries</code> 多一条</li>
+          <li>候选 keyframe index 列表（best score&gt;0.05 且单项&gt;0.015）；否则空列表</li>
+        </ul>
+      </div>
+      <div class="io-label">Timing 日志</div>
+      <div class="io-box timing">
+        <span class="timing-tag">loop.add.dbow</span>
+        <span class="timing-tag">loop.dbow.transform / query / add</span>
+        <span class="timing-tag">loop.matches.candidates</span>
+        字段：<code>detect_loop_ms</code>、<code>dbow_transform_ms</code>、<code>dbow_query_ms</code>、<code>dbow_add_ms</code><br/>
+        <span class="timing-ex">例：dbow=57.3ms（transform=19.5 · query=37.8 · add≈0）· db_entries=756 · candidates=4</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 15 -->
+  <div class="step-block" id="s15">
+    <div class="step-head">
+      <span class="step-num">15</span>
+      <span class="step-title">几何验证 Mutual NN + PnP</span>
+      <span class="step-fn">KeyFrame::findConnection · matchMutualNNLowe · PnPRANSAC</span>
+    </div>
+    <div class="step-body">
+      <div class="io-label">输入</div>
+      <div class="io-box">当前 KF landmark_desc + point_3d；旧 KF bow_descriptors + bow_keypoints</div>
+      <div class="io-label">中间结果（逐步）</div>
+      <div class="io-box out">
+        <ul>
+          <li><code>nn_matches</code>：Mutual NN + Lowe(0.8) 的 (cur_idx, old_idx, dist)</li>
+          <li><code>matched_3d</code> / <code>matched_2d_old_norm</code>：组装后的 3D–2D（旧点经 <code>pixelToNormalized</code>）</li>
+          <li>若匹配数 ≥ <code>min_loop_num</code> → PnP RANSAC → <code>status</code> 内点掩码；内点后的匹配子集</li>
+          <li><code>PnP_T_old</code> / <code>PnP_R_old</code>：估计的旧帧 IMU 位姿</li>
+          <li>相对位姿：<code>relative_t</code>、<code>relative_q</code>、<code>relative_yaw</code></li>
+          <li>门限通过（|yaw|&lt;30°，‖t‖&lt;20m）→ 写入 <code>has_loop</code>、<code>loop_index</code>、<code>loop_info[8]</code></li>
+        </ul>
+      </div>
+      <div class="io-label">Timing 日志</div>
+      <div class="io-box timing">
+        <span class="timing-tag">loop.add.verify</span>
+        <span class="timing-tag">loop.verify.nn / pnp</span>
+        <span class="timing-tag">loop.matches.*</span>
+        字段：<code>find_connection_ms</code>、<code>nn_match_ms</code>、<code>pnp_ms</code>；
+        计数 tried / nn_matches / geom_max / pnp_calls / inlier_max；hit/ok/fail<br/>
+        <span class="timing-ex">例：verify=66.3ms（nn=26.2 · pnp=20.6 · other=19.4）· tried=4 · nn_matches=34 ·
+        pnp_in_max=13 · inlier_max=9 · hit=1 ok=0 fail=1（几何未过门）</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 16 -->
+  <div class="step-block" id="s16">
+    <div class="step-head">
+      <span class="step-num">16</span>
+      <span class="step-title">入位姿图 + 可选 sequence 对齐</span>
+      <span class="step-fn">PoseGraph::addKeyFrame（后半）</span>
+    </div>
+    <div class="step-body">
+      <div class="io-label">中间结果</div>
+      <div class="io-box out">
+        <ul>
+          <li>跨 sequence 首次闭环：算出 <code>shift_r</code>/<code>shift_t</code>，写 <code>w_r_vio</code>/<code>w_t_vio</code>，整 sequence 关键帧 VIO 对齐</li>
+          <li>当前帧可视化位姿：VIO × <code>r_drift/t_drift</code> → <code>T_w_i</code></li>
+          <li><strong>释放</strong>本帧 <code>landmark_descriptors</code> 与 3D/2D 数组（历史帧验证只留 bow_*）</li>
+          <li><code>keyframelist.push_back</code>；可能 <code>enforceLoopKeyframeLimit</code> 淘汰最旧 BoW</li>
+          <li>若闭环成功：<code>optimize_buf</code> 入队 <code>{keyframe_index, enqueue_ns}</code></li>
+        </ul>
+      </div>
+      <div class="io-label">Timing 日志</div>
+      <div class="io-box timing">
+        <span class="timing-tag">loop.SCORE.add_kf</span>
+        <span class="timing-tag">loop.add.total / publish</span>
+        字段：<code>add_keyframe_ms</code>、<code>publish_ms</code>（path 可视化）；
+        SCORE <code>total ≈ prep + add_kf</code><br/>
+        <span class="timing-ex">例：add_kf=123.8ms · publish=0.0 · SCORE total=124.9ms · kf_hz=1.0</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 17 -->
+  <div class="step-block" id="s17">
+    <div class="step-head">
+      <span class="step-num">17</span>
+      <span class="step-title">Ceres 位姿图优化</span>
+      <span class="step-fn">optimize4DoF / optimize6DoF</span>
+    </div>
+    <div class="step-body">
+      <div class="io-label">输入</div>
+      <div class="io-box"><code>optimize_buf</code>（合并后只保留最新请求）；<code>earliest_loop_index</code>→cur</div>
+      <div class="io-label">中间结果</div>
+      <div class="io-box out">
+        <ul>
+          <li>问题构建：参数块（4DoF: yaw+t；6DoF: q+t）、近邻边、回环边</li>
+          <li>Ceres Solve（最多 5 次迭代）后的优化位姿 → 写回各 KF <code>T_w_i/R_w_i</code></li>
+          <li>更新 drift：
+            <ul>
+              <li>4DoF：<code>yaw_drift</code>，<code>r_drift=ypr2R(yaw,0,0)</code>，<code>t_drift</code></li>
+              <li>6DoF：<code>r_drift = cur_R * vio_Rᵀ</code>，<code>t_drift</code></li>
+            </ul>
+          </li>
+          <li>优化范围之后的关键帧用新 drift 刷新；<code>updatePath</code> 刷新可视化</li>
+        </ul>
+      </div>
+      <div class="io-label">Timing 日志</div>
+      <div class="io-box timing">
+        <span class="timing-tag">loop.optimize</span>
+        <span class="timing-tag">loop.problem</span>
+        字段：<code>LoopOptimizeTiming::{queue_wait,build,solve,apply,update_path,total}_ms</code>；
+        dof / keyframes / params / residuals / iters<br/>
+        <span class="timing-ex">例：本窗未出现 optimize 行 → 因 verify fail（ok=0），未入 optimize_buf</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 18 -->
+  <div class="step-block" id="s18">
+    <div class="step-head">
+      <span class="step-num">18</span>
+      <span class="step-title">高频里程计校正输出</span>
+      <span class="step-fn">vio_callback · getVioCorrection</span>
+    </div>
+    <div class="step-body">
+      <div class="io-label">输入</div>
+      <div class="io-box"><code>/odometry_vio</code> 原始位姿；(w_r_vio, w_t_vio, r_drift, t_drift)</div>
+      <div class="io-label">中间结果 / 最终输出</div>
+      <div class="io-box out">
+        <ul>
+          <li>先 sequence 对齐：<code>p' = w_r * p + w_t</code>，<code>q' = w_r * q</code></li>
+          <li>再 drift：<code>p'' = r_drift * p' + t_drift</code>，<code>q'' = r_drift * q'</code></li>
+          <li>发布 <code>/odometry</code>（<code>odometry_rect_topic</code>）— 对外主输出</li>
+          <li>可选：每隔 <code>camera_pose_visual_stride</code> 发相机 Marker</li>
+        </ul>
+      </div>
+      <div class="io-label">Timing 日志</div>
+      <div class="io-box timing">
+        <span class="timing-tag">loop.vio</span>
+        字段：<code>LoopVioTiming::{correction,odometry_publish,rviz_publish,total}_ms</code><br/>
+        <span class="timing-ex">例：total=0.9ms · correct=0.2–0.3 · odom_pub=0.7–0.8 · hz≈99–100 · n=101</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <strong>数据形态速记</strong>：
+    图像 640×384 → VIO 点+id → 两套 float 描述子（密集 BoW / 路标采样）→
+    关键帧过滤后 1:1 的 3D+landmark → ROS v2 载荷 → KeyFrame（BoW 压 int8）→
+    BowVector + 候选 index → NN matches + PnP 内点 + loop_info →
+    optimize_buf → r_drift/t_drift → 校正 /odometry。
+  </div>
+
+  <h2 id="timing-map">17.2 Timing 日志 ↔ 步骤对照</h2>
+  <p>
+    定义来源：<code>pipeline_timing.h</code>（frontend/backend）、
+    <code>loop_timing.h</code>（loop）。日志缩进树表示包含关系；
+    <code>npu_diag</code> 为诊断分解，已计入 <code>extract</code> 或 <code>loop_desc</code>，不可再加总。
+  </p>
+
+  <h3>层级树（与日志缩进一致）</h3>
+  <pre>frontend SCORE  e2e = source + queue + process
+  ├─ source       grab + map+convert + release     → 步骤 1–2
+  ├─ track
+  │  └─ process   pyramid + core + debug           → 步骤 3–4 外壳
+  │     └─ core   extract + klt + loop_desc        → 步骤 4–7
+  │        ├─ klt temporal + stereo+gate
+  │        └─ (npu_diag 诊断，勿加总)
+  ├─ tracks / detect / new_stereo / loop_c         → 计数
+  └─ queue        backend_enqueue
+
+backend SCORE   total = prep + opt + marg + loop_pub + odom_pub + …
+  ├─ select       wait_outside + parallax + reject → 非关键帧路径
+  ├─ prep         parallax + tri + preint          → 步骤 9 前半
+  ├─ optimize     build + solve + post             → 步骤 9 BA
+  ├─ state        窗状态计数
+  └─ loop_c       collect + pack + pub             → 步骤 10–11
+
+loop SCORE      total = prep + add_kf
+  ├─ prep         sync/cloud/desc_*/construct      → 步骤 12–13
+  ├─ add          dbow + verify + publish          → 步骤 14–16
+  │  ├─ dbow      transform + query + add
+  │  └─ verify    nn + pnp
+  ├─ input/matches/skip                            → 计数
+  ├─ optimize     build+solve+apply                → 步骤 17（闭环成功才有）
+  └─ vio          correct + odom_pub               → 步骤 18</pre>
+
+  <h3>总表（示例数值取自你贴的窗口）</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>步骤</th>
+        <th>日志路径</th>
+        <th>结构体字段</th>
+        <th>示例</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><a href="#s1">1</a> IVPS grab</td>
+        <td class="fn">frontend.source.grab / release</td>
+        <td class="path">ivps_tracking_grab/release_ms</td>
+        <td class="timing-ex">0.1 / 0.2 ms</td>
+      </tr>
+      <tr>
+        <td><a href="#s2">2</a> map+convert</td>
+        <td class="fn">frontend.source.map+convert · total</td>
+        <td class="path">ivps_tracking_convert_ms · input_source_ms</td>
+        <td class="timing-ex">8.7 · source=9.1 ms</td>
+      </tr>
+      <tr>
+        <td><a href="#s3">3</a> 入队/process</td>
+        <td class="fn">SCORE.queue / process · queue.*</td>
+        <td class="path">input_queue_wait_ms · frontend_process_ms</td>
+        <td class="timing-ex">queue=20.6 · process=86.9 · e2e=116.5</td>
+      </tr>
+      <tr>
+        <td><a href="#s4">4</a> 金字塔+KLT</td>
+        <td class="fn">process.pyramid · core.klt · klt.* · tracks</td>
+        <td class="path">track_pyramid_ms · track_loop_*_ms</td>
+        <td class="timing-ex">pyramid=15.0 · klt=16.1 · final≈25</td>
+      </tr>
+      <tr>
+        <td><a href="#s5">5</a> 立体提取 NPU</td>
+        <td class="fn">core.extract · npu_diag · detect · new_stereo · [tracking]</td>
+        <td class="path">track_extract_ms · npu_*</td>
+        <td class="timing-ex">extract=18.4 · detect=33.0（desc_map=23.6）</td>
+      </tr>
+      <tr>
+        <td><a href="#s6">6</a> 密集 BoW desc</td>
+        <td class="fn">core.loop_desc · loop_c.dense</td>
+        <td class="path">track_loop_descriptor_ms · loop_closure_desc_rows</td>
+        <td class="timing-ex">loop_desc=36.5 · dense=100</td>
+      </tr>
+      <tr>
+        <td><a href="#s7">7</a> landmark sample</td>
+        <td class="fn">npu_diag.desc_sample · loop_c.landmark</td>
+        <td class="path">track_descriptor_sample_ms · landmark_desc_rows</td>
+        <td class="timing-ex">desc_sample=3.5 · landmark=25</td>
+      </tr>
+      <tr>
+        <td><a href="#s8">8</a> VisionMeasurement</td>
+        <td class="fn">track.pack · SCORE.e2e · loop_c.prep</td>
+        <td class="path">track_pack_ms · frontend_e2e_ms</td>
+        <td class="timing-ex">pack=0.8 · e2e=116.5</td>
+      </tr>
+      <tr>
+        <td><a href="#s9">9</a> 融合 BA</td>
+        <td class="fn">backend.SCORE / select / prep / optimize / state</td>
+        <td class="path">FrameBackendTiming 全套</td>
+        <td class="timing-ex">total=145 · opt=116（solve=110.5）· marg=17 · accept 50%</td>
+      </tr>
+      <tr>
+        <td><a href="#s10">10</a> 关键帧打包</td>
+        <td class="fn">backend.loop_c.collect / pack</td>
+        <td class="path">loop_closure_collect/pack_ms · kf_points · bow_rows</td>
+        <td class="timing-ex">0.1+0.3 · points=25 · bow=100</td>
+      </tr>
+      <tr>
+        <td><a href="#s11">11</a> ROS 发布</td>
+        <td class="fn">backend.loop_c.pub · SCORE.loop_pub</td>
+        <td class="path">loop_closure_publish(_total)_ms</td>
+        <td class="timing-ex">pub=6.3 · loop_pub=6.7</td>
+      </tr>
+      <tr>
+        <td><a href="#s12">12</a> loop 同步解码</td>
+        <td class="fn">loop.prep.* · skip · input</td>
+        <td class="path">LoopKeyframeTiming prep 字段</td>
+        <td class="timing-ex">prep≈1.0 · desc_decode=0.7 · skip stride/motion</td>
+      </tr>
+      <tr>
+        <td><a href="#s13">13</a> 构造 KF</td>
+        <td class="fn">loop.prep.construct</td>
+        <td class="path">keyframe_construct_ms</td>
+        <td class="timing-ex">0.1 ms</td>
+      </tr>
+      <tr>
+        <td><a href="#s14">14</a> DBoW</td>
+        <td class="fn">loop.dbow.* · matches.candidates</td>
+        <td class="path">detect_loop / dbow_*_ms</td>
+        <td class="timing-ex">57.3（tf=19.5 query=37.8）· db=756 · cand=4</td>
+      </tr>
+      <tr>
+        <td><a href="#s15">15</a> NN+PnP</td>
+        <td class="fn">loop.verify.* · matches.*</td>
+        <td class="path">find_connection / nn_match / pnp_ms</td>
+        <td class="timing-ex">66.3（nn=26.2 pnp=20.6）· fail=1 ok=0</td>
+      </tr>
+      <tr>
+        <td><a href="#s16">16</a> 入图</td>
+        <td class="fn">loop.SCORE.add_kf · add.publish</td>
+        <td class="path">add_keyframe_ms · publish_ms</td>
+        <td class="timing-ex">add_kf=123.8 · total=124.9</td>
+      </tr>
+      <tr>
+        <td><a href="#s17">17</a> 位姿图优化</td>
+        <td class="fn">loop.optimize · problem</td>
+        <td class="path">LoopOptimizeTiming</td>
+        <td class="timing-ex">本窗无（几何 fail 未入队）</td>
+      </tr>
+      <tr>
+        <td><a href="#s18">18</a> 校正 odom</td>
+        <td class="fn">loop.vio</td>
+        <td class="path">LoopVioTiming</td>
+        <td class="timing-ex">0.9 ms · hz≈100</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <strong>读这段日志的瓶颈</strong>：
+    前端 e2e≈116ms 里 <code>loop_desc</code>(36.5)+NPU <code>desc_map</code>(23.6) 重；
+    后端关键帧 total≈145ms 几乎全是 Ceres <code>solve</code>(110.5)；
+    loop 侧单次 add_kf≈124ms 里 <code>dbow.query</code>(37.8)+<code>verify</code>(66.3) 为主，且本窗几何验证失败故无 pose-graph optimize。
+  </div>
+
+  <h2 id="topics-contract">18. 话题契约（两端对齐）</h2>
+  <table>
+    <thead><tr><th>Topic</th><th>ms_fusion</th><th>ms_fusion_loop</th></tr></thead>
+    <tbody>
+      <tr>
+        <td class="fn">ms_fusion/keyframe_pose</td>
+        <td>pubKeyframeLoop 发 Odometry（world←base_link）</td>
+        <td>pose_callback → 同步主时钟</td>
+      </tr>
+      <tr>
+        <td class="fn">ms_fusion/keyframe_point</td>
+        <td>PointCloud：xyz + 每点 channel[norm_x,y, uv_x,y, id]</td>
+        <td>parseKeyframePointCloud</td>
+      </tr>
+      <tr>
+        <td class="fn">ms_fusion/keyframe_descriptors</td>
+        <td>32FC1 Image，frame_id=cam0_loop_desc_v2<br/>行 = [kind, u, v, desc…]；0=检索，1=路标</td>
+        <td>decodeDescriptors → BoW + landmark</td>
+      </tr>
+      <tr>
+        <td class="fn">ms_fusion/extrinsic</td>
+        <td>base_link←cam0</td>
+        <td>extrinsic_callback 更新 tic/qic（PnP 用）</td>
+      </tr>
+      <tr>
+        <td class="fn">/odometry_vio</td>
+        <td>连续原始 VIO</td>
+        <td>raw_odometry_topic → 校正源</td>
+      </tr>
+      <tr>
+        <td class="fn">/odometry</td>
+        <td>—</td>
+        <td>odometry_rect_topic：最终输出</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="mermaid-box">
+    <pre class="mermaid">
+sequenceDiagram
+  participant IVPS as Axera IVPS
+  participant Node as ms_fusion_node
+  participant Track as Tracking
+  participant Mgr as MsFusionManager
+  participant Loop as ms_fusion_loop
+
+  IVPS->>Node: GetChnFrame GRP7/8 gray
+  Node->>Node: resize/pad 640×384
+  Node->>Track: processImage
+  Track->>Track: XFeat/SP + KLT
+  Track->>Track: dense BoW descs + landmark sample
+  Track->>Mgr: VisionMeasurement
+  Mgr->>Mgr: keyframe if Δt ok
+  Mgr->>Node: publishKeyframeLoop
+  Node->>Loop: pose + point + desc_v2 + extrinsic
+  Node->>Loop: /odometry_vio stream
+  Loop->>Loop: DBoW + NN + PnP + Ceres
+  Loop-->>Loop: /odometry corrected
+    </pre>
+  </div>
+
+  <div class="callout ok">
+    <strong>职责边界一句话</strong>：IVPS 出图 → ms_fusion 做跟踪/VIO/关键帧描述子打包 →
+    ms_fusion_loop 只消费同 stamp 的关键帧包 + 高频 VIO，输出 drift 校正里程计。
+  </div>
+
+  <footer>
+    文档生成自代码库 <code>ms_fusion</code> + <code>ms_fusion_loop</code> · 本地打开本 HTML 即可浏览（流程图依赖 CDN mermaid）。
+    文件位置：<code>ros_wrapper/src/ms_fusion_loop/docs/loop_closure_guide.html</code>
+  </footer>
+</main>
+</div>
+</body>
+</html>

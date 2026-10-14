@@ -1,0 +1,227 @@
+# i2Nav Robot Config File
+
+base:
+  vision_realtime_force: true         # 是否实时处理图片
+  log_profile: release                # release: 仅关键日志 | debug: 全量调试日志
+  verbose_runtime_log: false
+  enable_timing_stats: true
+  print_config_on_startup: false
+  odom_publish_stride: 1              # /odometry 发布步长：每 N 帧 IMU 发一次（1=跟 IMU 同频，2=隔帧）
+  odometry_topic: /odometry           # 原始实时 VIO Odometry 输出
+  qos: best_effort                    # 默认发布 QoS：best_effort | reliable
+  odometry_qos: best_effort           # /odometry、est_odom、gnss_odom（默认跟 qos）
+  odometry_qos_depth: 10              # 原始 Odometry 发布队列深度
+  tf_qos: best_effort                 # /tf（默认跟 qos；RViz 需同 reliability）
+
+imu:
+  arw: 0.2                            # IMU的角度随机游走（deg/sqrt(hr)）
+  vrw: 0.3                            # IMU的速度随机游走（m/s/sqrt(hr)）
+  gb_std: 10                           # IMU的陀螺仪偏置的标准差（deg/）
+  ab_std: 30                          # IMU的加速度计偏置的标准差（mGal）
+  corr_time: 1.0                      # 时间相关性(hr)
+  use_median: true                    # 是否用中值进行计算
+  gravity: 9.801                      # 当地重力（m/s^2）
+  T_virtual_imu_from_real_imu:        # 真实IMU坐标系到虚拟IMU坐标系（前-右-下）的变换矩阵
+  - [1.0, 0.0, 0.0, 0.0]
+  - [0.0, 1.0, 0.0, 0.0]
+  - [0.0, 0.0, 1.0, 0.0]
+  - [0.0, 0.0, 0.0, 1.0]
+  T_imu_from_base:                    # base_link → 真实IMU(FLU)，发布 world←base_link 用
+  - [1.0,  0.0,  0.0, -0.0745]
+  - [0.0,  1.0,  0.0,  0.112]
+  - [0.0,  0.0,  1.0, -0.08523]
+  - [0.0,  0.0,  0.0,  1.0]
+
+odom:
+  enable: false                       # 未标定 i2nav 轮速外参；标定后再开启
+  # roll/pitch：轮式里程计对这两轴没有独立观测能力，原值 0.1 deg/s 经预积分后
+  # σ 只有约 0.005°/关键帧，任何微小不一致都会放大成几十 σ 的残差，让优化过度
+  # 信任 odom 的姿态。放大到 10.0 使该约束实质失效，roll/pitch 交给 IMU 和视觉。
+  w_x_std: 10.0                       # x轴方向角速度的标准差(deg/s)
+  w_y_std: 10.0                       # y轴方向角速度的标准差(deg/s)
+  w_z_std: 2.0                        # z轴方向角速度的标准差(deg/s)；yaw 轮式确有观测，保持不变
+  v_x_std: 0.2                        # x轴方向速度的标准差(m/s)
+  v_y_std: 0.2                        # y轴方向速度的标准差(m/s)
+  v_z_std: 0.01                       # z轴方向速度的标准差(m/s)
+  T_imu_from_odom:                    # odom坐标系到真实IMU坐标系的变换矩阵；启用前必须替换为标定值
+  - [1.0, 0.0, 0.0, 0.0]
+  - [0.0, 1.0, 0.0, 0.0]
+  - [0.0, 0.0, 1.0, 0.0]
+  - [0.0, 0.0, 0.0, 1.0]
+
+camera:
+  cam0:
+    model: pinhole-radtan5                                          # 相机模型（pinhole-radtan4：4个畸变系数，pinhole-radtan5：5个畸变系数）
+    resolution: [1600, 1200]                                        # 左相机的分辨率
+    intrinsic: [1064.8950, 1065.2546, 801.4049, 624.6878]           # 左相机的内参
+    distortion: [-0.1516, 0.0942, 0.000169, -0.000142, -0.0229]     # 左相机的畸变系数
+    td_cam_to_imu: 0.0                                              # 左相机到IMU的时间延迟（s）
+
+    T_imu_cam:                                                      # 相机到IMU的变换矩阵                 
+    - [0.00549192, -0.00206914,  0.99998278,  0.090]
+    - [0.99998051, -0.00295932, -0.00549803, -0.200]
+    - [0.00297065,  0.99999348,  0.00205284, -0.054]
+    - [0.00000000,  0.00000000,  0.00000000,  1.000]
+
+  cam1:
+    model: pinhole-radtan5                                          # 相机模型（pinhole-radtan4：4个畸变系数，pinhole-radtan5：5个畸变系数）
+    resolution: [1600, 1200]                                        # 右相机的分辨率
+    intrinsic: [1063.2368, 1063.4470, 804.0671, 630.0190]           # 右相机的内参
+    distortion: [-0.1517, 0.0959, -0.000104, -0.000018, -0.0238]    # 右相机的畸变系数
+    td_cam_to_imu: 0.0                                              # 右相机到IMU的时间延迟（s）
+
+    T_imu_cam:                                                      # 相机到IMU的变换矩阵
+    - [-0.00685422,  0.000689709,  0.999976000,  0.0872583]
+    - [ 0.99997300,  0.002667650,  0.006852360,  0.1999890]
+    - [-0.00266284,  0.999996000, -0.000707983, -0.0550651]
+    - [ 0.00000000,  0.00000000,   0.00000000,   1.0000000]
+
+tracking:
+  feature_detector: xfeat                  # 角点检测算法: superpoint | xfeat（纯 NPU descriptor + MNN 跟踪，不再支持 fast/KLT）
+  # 以下 superpoint/xfeat 段仅在 feature_detector 改为 superpoint/xfeat 时生效
+  superpoint:
+    model_path: ../models/superpoint_v6_fp32_640384.axmodel
+    score_threshold: 0.03              # score map 阈值；建议 0.015~0.05，越低候选越多、post 越慢
+    nms_radius: 4                      # local-max NMS 半径；核大小=2*radius+1；建议 4~5(9×9~11×11)
+    border: 20                         # score map 边缘裁剪带（像素），比 nms_radius 更宽，避免边缘
+                                        # 卷积/padding 伪影被当成候选点；迁移自 front_end main 分支
+    enable_hardware_preprocess: false
+    enable_preprocess_timing: false
+    publish_debug_image: false
+    debug_image_topic: ms_fusion/vision_debug
+  xfeat:
+    model_path: ../models/xfeat_npu1-full-384.axmodel
+    score_threshold: 0.005             # 建议 0.005~0.05；官方默认约 0.05
+    border: 30                         # score map 边缘裁剪带（像素），避免边缘卷积/padding 伪影
+                                        # 被当成候选点；迁移自 front_end main 分支
+    enable_hardware_preprocess: false
+    enable_preprocess_timing: false
+    publish_keypoints_image: false
+    keypoints_image_topic: ms_fusion/xfeat_keypoints
+  min_distance: 30.0                   # 最小特征点距离（m）
+  grid_x: 8                            # 网格x方向的格子数
+  grid_y: 6                            # 网格y方向的格子数
+  max_num_features: 200                # 最大特征点数量
+  epipolar_error_threshold_px: 2.0      # 双目匹配右目点到极线的距离阈值（像素），与 triangulation_max_reprojection_px 同口径
+  loop_distance_threshold: 0.5         # 环形匹配距离阈值
+  use_lightglue: false                 # true: 使用双 handle LightGlue 并行时间/立体匹配
+  lightglue_model_path: ../models/lighterglue_640x384_top256_npu1.axmodel
+  lightglue_score_threshold: 0.2       # LightGlue 匹配置信度阈值，低于此分数的候选匹配直接丢弃
+  ransac_max_iters: 128                         # F-RANSAC 最大迭代数上限；H 快速预检命中时
+                                                # 会完全跳过 F，这里只需覆盖没被 H 拦下的长尾
+  homography_precheck_max_iters: 64            # F 之前先跑的低预算 Homography RANSAC 迭代数
+  homography_min_inlier_ratio: 0.75            # H 内点率达到这个比例才认为单应模型占优、跳过 F
+  homography_min_inliers: 16                   # 配合上面的比例门槛，避免候选点少时比例虚高
+  downsize_camera: true                # 相机降采样
+
+optimizer:
+  window_size: 10                      # 滑窗的大小
+  max_iterations: 30                   # 最大迭代次数
+  optimize_reprojection_std: 2.0       # 视觉的标准差（像素）
+  outlier_reprojection_sigma: 3.0      # 单次观测判粗差的门限，单位是上面 std 的倍数；
+                                       # 判掉的观测不再进优化和边缘化先验且不恢复。
+                                       # 1.0 会把正常观测里 1σ 外的三成一起判掉（实测
+                                       # 快速移动段残差块只剩 18 个），3σ 是常规取值。
+  keyframe_min_interval_s: 0.099       # 相邻关键帧最小间隔（秒）；5Hz 前端建议 0.19~0.20，10Hz 建议 0.09~0.10
+  keyframe_min_parallax_px: 8.0     # 时间间隔未达标时的平均视差提前判定阈值（像素等效）
+  keyframe_min_parallax_track_num: 16  # 参与平均视差计算的最少共同观测点数；不足时视差估计不可靠，不提前接受
+static_detector:
+  gyr_std_threshold: 0.01              # 陀螺三轴标准差上限（rad/s）
+  acc_xy_std_threshold: 0.04           # 加表 x/y（侧向）标准差上限（m/s^2）；原0.03偶发卡住静止streak(实机实测冷启动振动0.0315/0.0356)，放宽到0.04，仍明显高于静止地板 ~0.018~0.020
+  acc_z_std_threshold: 0.03            # 加表 z（重力轴）标准差上限（m/s^2）；插值 bug 修复后 z 轴和 x/y 同量级，不再单独放宽
+  gravity_tolerance: 0.1               # 比力模长与当地重力的允许偏差（m/s^2）；此前放宽到 1.4
+                                     # 是在补偿 getImuMeasurementSeries 关键帧边界插值样本
+                                     # am/wm 未赋值（默认零向量）拉低比力均值的 bug，已在
+                                     # ins_mech.cpp:imuInterpolation 修复，改回默认值
+  confirm_windows: 10                  # 连续通过多少个窗口才确认静止（原 5，调大让静止/重定位确认更久更稳，
+                                       # 副作用是初始化耗时变长；reloc_measurement_buff_ 现在跟 streak 同步，
+                                       # 窗口数越多攒的重定位融合样本也越多）
+  enable_zupt: true                    # 静止确认后是否给优化窗口加零速伪观测
+  zupt_velocity_std: 0.02              # 零速伪观测的速度标准差（m/s）
+  runtime_window_s: 1.5                # 运行时静止检测的滚动窗口时长（s）；单个关键帧间隔
+                                       # 太短磨不平高频振动噪声，窗口拉长才有意义
+  init_window_s: 0.2                   # Initializer 用重定位初始化时单个视觉观测窗口时长（s）；
+                                        # 凑够才检查窗口内有无一次成功 reloc，和 runtime_window_s
+                                        # （运行时滚动窗口）是两个独立维度，不要混用
+  std_smoothing_window: 5               # 算标准差前先做非重叠滑动平均的块大小（采样点数），
+                                       # 1 表示不平滑；简单的低通滤波，压高频振动/电磁噪声
+  odom_vel_static_threshold: 0.05       # 轮速线速度均值静止门限（m/s）；odom.enable=true 时与 IMU 判据叠加确认静止
+
+# VSLAM 位姿 × 激光 → /matched_point_cloud（对齐 cartographer 话题格式；两路交替发，不合帧）
+matched_cloud:
+  enable: true
+  topic: matched_point_cloud
+  qos: best_effort                 # matched_point_cloud QoS：best_effort | reliable
+  front_cloud_topic: front_left_cloud
+  rear_cloud_topic: rear_right_cloud
+  map_frame: world
+  enable_fill: true
+  fill_angle_deg: 5.0
+  fill_distance: 15.0
+  min_range: 0.5
+  max_range: 12.0
+  front:
+    topic: /scan_front_left
+    frame_id: laser_front_left
+    x: 0.17533
+    y: 0.18033
+    yaw_deg: 44.19
+    enable_angle_filter: true
+    block_angle_ranges_deg:
+      - [-179.99, -45.00]
+  rear:
+    topic: /scan_rear_right
+    frame_id: laser_rear_right
+    x: -0.17533
+    y: -0.18033
+    yaw_deg: -135.81
+    enable_angle_filter: true
+    block_angle_ranges_deg:
+      - [0.01, 135.00]
+
+# 视觉回环；此配置尚未验证词典及描述子模型，配置完成后再开启
+loop:
+  enable: false
+  voc_path: ""                       # 相对 config 目录或绝对路径；enable=true 前必须填写
+  use_imu: true
+  save_image: false
+  image_topic: ""                    # save_image=true 时填写原始图像话题
+  load_previous_pose_graph: false
+  verbose_runtime_log: false          # true 才输出逐帧 DBoW/NN/PnP 诊断
+  enable_rviz: false                  # Path/Marker 可视化总开关；生产环境建议关闭
+  save_loop_path: false              # 是否持续写入 vio_loop.csv
+  camera_pose_visual_stride: 10      # enable_rviz=true 时相机 Marker 的发布降频
+  max_sync_queue_size: 200           # pose/point/descriptor/image 同步队列上限
+  max_loop_keyframes: 5000           # 仅保留最近 N 帧检索重数据；0=不限制
+  dbow_best_score_threshold: 0.65    # 最佳检索结果必须高于此值，才启动几何验证
+  dbow_candidate_score_threshold: 0.50 # 单个候选必须高于此值，且不得高于 best 门限
+  dbow_candidate_relative_ratio: 0.95    # 候选收窄：score >= best_score * 此值才留；两轮实机实测(215次候选事件)显示大多数时候不是限制因素
+  dbow_max_candidates: 2                 # 候选收窄：最多保留几个候选送去几何验证(NN+PnP)；实测能把平均候选数从4.0砍到~2.0
+  skip_dis: 0.0                      # <=0: 每个关键帧都进回环；>0: 平移超过该距离才进
+  skip_cnt: 0                        # 每处理 1 帧后额外跳过的关键帧数；0=不跳帧
+  skip_first_cnt: 10
+  min_loop_num: 16
+  pose_gate_max_yaw_deg: 10.0          # PnP相对位姿与VIO一致性门限：yaw差超过此值拒绝该回环边（原硬编码45.0）
+  pose_gate_max_translation_m: 2.0     # 同上，平移差（原硬编码20.0）
+  pose_gate_max_reproj_rmse_px: 4.0    # PnP内点重投影RMSE上限，单位px（原硬编码5.0）
+  pose_gate_min_pnp_inlier_ratio: 0.60 # PnP内点率下限 = pnp_inliers/matched_3d（原无此项）
+  loop_max_verified_candidates: 1      # 每个当前关键帧最多实际验证(NN+PnP)几个候选（冷却过滤之后）
+  loop_cooldown_keyframes: 20          # 全局接受冷却：距上次LOOP CLOSED不足这么多关键帧，不管候选old是谁一律跳过
+  loop_cooldown_dedup_radius: 15       # old邻域去重半径：候选old落在上次接受old的这个范围内就跳过（仅在loop_dedup_window_keyframes窗口内生效）
+  loop_dedup_window_keyframes: 60      # old邻域去重的有效期（帧）：超过这个cur_gap就不再管old距离，允许真正的再次重访；<=0表示关闭old邻域去重这一层，只保留全局冷却
+  enable_timing: true
+  timing_report_interval_s: 1.0
+  path_publish_stride: 10
+  max_visual_path_poses: 10000
+  keyframe_pose_topic: ms_fusion/keyframe_pose
+  keyframe_point_topic: ms_fusion/keyframe_point
+  keyframe_descriptors_topic: ms_fusion/keyframe_descriptors
+  raw_odometry_topic: /odometry
+  odometry_sub_qos: best_effort
+  odometry_sub_qos_depth: 2000
+  odometry_rect_topic: /odometry_rect
+  odometry_rect_qos: best_effort
+  odometry_rect_qos_depth: 10
+  extrinsic_topic: ms_fusion/extrinsic
+  pose_graph_save_path: output/pose_graph/
+  output_path: output/

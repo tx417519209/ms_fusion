@@ -1,0 +1,42 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "/usr/include/eigen3",
+                "/usr/include/opencv4",
+                "${workspaceFolder}/msf_core/include",
+                "${workspaceFolder}/msf_core/interface",
+                "${workspaceFolder}/msf_core/third_party/Sophus",
+                "/opt/ros/humble/include",
+                "/opt/ros/humble/include/rclcpp",
+                "/opt/ros/humble/include/rcl",
+                "/opt/ros/humble/include/rcutils",
+                "/opt/ros/humble/include/rmw",
+                "/opt/ros/humble/include/rcl_yaml_param_parser",
+                "/opt/ros/humble/include/rosidl_runtime_c",
+                "/opt/ros/humble/include/rosidl_typesupport_interface",
+                "/opt/ros/humble/include/rcpputils",
+                "/opt/ros/humble/include/builtin_interfaces",
+                "/opt/ros/humble/include/rosidl_runtime_cpp",
+                "/opt/ros/humble/include/tracetools",
+                "/opt/ros/humble/include/rcl_interfaces",
+                "/opt/ros/humble/include/libstatistics_collector",
+                "/opt/ros/humble/include/statistics_msgs",
+                "/opt/ros/humble/include/sensor_msgs",
+                "/opt/ros/humble/include/std_msgs",
+                "/opt/ros/humble/include/geometry_msgs",
+                "/opt/ros/humble/include/nav_msgs",
+                "/opt/ros/humble/include/message_filters",
+                "/usr/local/include"
+            ],
+            "defines": [],
+            "compilerPath": "/usr/bin/gcc",
+            "cStandard": "c17",
+            "cppStandard": "gnu++17",
+            "intelliSenseMode": "linux-gcc-x64"
+        }
+    ],
+    "version": 4
+}

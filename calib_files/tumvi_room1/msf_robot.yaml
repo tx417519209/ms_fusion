@@ -1,0 +1,357 @@
+base:
+  vision_realtime_force: true
+  log_profile: release
+  verbose_runtime_log: false
+  enable_timing_stats: true
+  print_config_on_startup: true
+  odom_publish_stride: 1
+  odometry_topic: /odometry_vio
+  qos: best_effort
+  odometry_qos: best_effort
+  odometry_qos_depth: 10
+  tf_qos: best_effort
+imu:
+  topic: /tumvi/imu
+  qos: best_effort
+  qos_depth: 500
+  arw: 0.5500394833255904
+  vrw: 0.168
+  gb_std: 192.52364104703557
+  ab_std: 3648.670990922585
+  corr_time: 1.0
+  use_median: true
+  gravity: 9.81
+  T_virtual_imu_from_real_imu:
+  - - -0.02989013031643309
+    - -0.998969345370175
+    - 0.03415885127385616
+    - 0.0
+  - - -0.9995250378696743
+    - 0.029615343885863205
+    - -0.008522328211654736
+    - 0.0
+  - - 0.0075019185074052044
+    - -0.03439736061393144
+    - -0.9993800792498829
+    - 0.0
+  - - 0.0
+    - 0.0
+    - 0.0
+    - 1.0
+  T_imu_from_base:
+  - - 1.0
+    - 0.0
+    - 0.0
+    - 0.0
+  - - 0.0
+    - 1.0
+    - 0.0
+    - 0.0
+  - - 0.0
+    - 0.0
+    - 1.0
+    - 0.0
+  - - 0.0
+    - 0.0
+    - 0.0
+    - 1.0
+odom:
+  enable: false
+  topic: /odom
+  qos: best_effort
+  qos_depth: 500
+  w_x_std: 10.0
+  w_y_std: 10.0
+  w_z_std: 2.0
+  v_x_std: 0.2
+  v_y_std: 0.2
+  v_z_std: 0.01
+  T_imu_from_odom:
+  - - 1.0
+    - 0.0
+    - 0.0
+    - 0.0
+  - - 0.0
+    - 1.0
+    - 0.0
+    - 0.0
+  - - 0.0
+    - 0.0
+    - 1.0
+    - 0.0
+  - - 0.0
+    - 0.0
+    - 0.0
+    - 1.0
+camera:
+  cam0:
+    offline:
+      topic: /tumvi/cam0
+      image_type: compressed
+    model: pinhole-radtan4
+    resolution:
+    - 640
+    - 384
+    intrinsic:
+    - 143.23191907627867
+    - 143.23191907627867
+    - 192.0
+    - 192.0
+    distortion:
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    td_cam_to_imu: 0.0
+    T_imu_cam:
+    - - -0.9995250378696754
+      - 0.007501918507405213
+      - -0.029890130316433127
+      - 0.04557483564969807
+    - - 0.02961534388586324
+      - -0.034397360613931484
+      - -0.9989693453701762
+      - -0.07116180183799713
+    - - -0.008522328211654747
+      - -0.9993800792498841
+      - 0.034158851273856206
+      - -0.04468125411714442
+    - - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+  cam1:
+    offline:
+      topic: /tumvi/cam1
+      image_type: compressed
+    model: pinhole-radtan4
+    resolution:
+    - 640
+    - 384
+    intrinsic:
+    - 142.82880306237894
+    - 142.82880306237894
+    - 192.0
+    - 192.0
+    distortion:
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    td_cam_to_imu: 0.0
+    T_imu_cam:
+    - - -0.9995110484978582
+      - 0.008104079263822521
+      - -0.03019913624589138
+      - -0.05545633914259545
+    - - 0.030299116376600627
+      - 0.012511643720192384
+      - -0.9994625667418547
+      - -0.06925002164224774
+    - - -0.007721883028733356
+      - -0.9998888851620987
+      - -0.012751072573940855
+      - -0.047452864807513394
+    - - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+tracking:
+  extractor:
+    feature_detector: xfeat
+    superpoint:
+      model_path: ../models/superpoint_v6_fp32_640384.axmodel
+      score_threshold: 0.05
+      nms_radius: 10
+      border: 20
+      enable_hardware_preprocess: true
+      enable_preprocess_timing: false
+      publish_debug_image: false
+      debug_image_topic: ms_fusion/vision_debug
+    xfeat:
+      model_path: ../models/xfeat_384x640_maxpool_5x5_top256_npu1.axmodel
+      score_threshold: 0.01
+      border: 20
+      enable_hardware_preprocess: true
+      enable_preprocess_timing: false
+      npu_affinity_left: 2
+      npu_affinity_right: 4
+      publish_keypoints_image: false
+      keypoints_image_topic: ms_fusion/xfeat_keypoints
+    min_distance: 10.0
+    grid_x: 8
+    grid_y: 6
+  matcher:
+    method: lightglue
+    lightglue:
+      model_path: ../models/lighterglue_640x384_top256_npu1.axmodel
+      score_threshold: 0.2
+      npu_affinity_temporal: 2
+      npu_affinity_stereo: 4
+      max_num_features: 256
+    mnn:
+      ratio_threshold: 0.75
+    max_motion_px: 120.0
+    epipolar_error_threshold_px: 2.0      # 双目匹配右目点到极线的距离阈值（像素），与 triangulation_max_reprojection_px 同口径
+    ransac_max_iters: 128
+    homography_precheck_max_iters: 64
+    homography_min_inlier_ratio: 0.75
+    homography_min_inliers: 16
+  tracking:
+    publish_temporal_tracking_debug: false
+    temporal_tracking_debug_topic: ms_fusion/temporal_tracking
+    publish_stereo_match_debug: false
+    stereo_match_debug_topic: ms_fusion/stereo_match
+    downsize_camera: false
+    downsize_factor: 3
+    drop_bottom_feature_rows: 24
+    ivps_left_grp: 7
+    ivps_right_grp: 8
+optimizer:
+  window_size: 8
+  max_iterations: 30
+  optimize_reprojection_std: 2.0
+  outlier_reprojection_sigma: 3.0
+  triangulation_max_reprojection_px: 2.0
+  triangulation_min_angle_deg: 0.2
+  keyframe_min_interval_s: 0.2
+  keyframe_min_parallax_px: 15.0
+  keyframe_min_parallax_track_num: 24
+  # 提前换参考：旧点少于14且保留率低于45%，但至少保留6个连接点。
+  keyframe_min_valid_matches: 14
+  keyframe_min_match_ratio: 0.45
+  keyframe_min_connected_matches: 6
+  # 关键帧间隔按视觉支撑度连续调节（见 OptimizerConfigParams::keyframe_adaptive_*）
+  keyframe_adaptive_floor_s: 0.18
+static_detector:
+  gyr_std_threshold: 0.01
+  acc_xy_std_threshold: 0.08
+  acc_z_std_threshold: 0.05
+  gravity_tolerance: 0.1
+  gyr_mean_norm_threshold: 0.03
+  confirm_windows: 5
+  enable_zupt: true
+  zupt_velocity_std: 0.004
+  runtime_window_s: 2
+  std_smoothing_window: 5
+  odom_vel_static_threshold: 0.05
+initializer:
+  enable: false
+  gyr_std_threshold: 0.01
+  acc_xy_std_threshold: 0.08
+  acc_z_std_threshold: 0.05
+  gravity_tolerance: 0.1
+  gyr_mean_norm_threshold: 0.03
+  confirm_windows: 5
+  std_smoothing_window: 5
+  init_window_s: 0.2
+  init_timeout_s: 60.0
+reloc:
+  enable: false
+  resolution:
+  - 640
+  - 384
+  enable_undistort: true
+  undistort_alpha: 1.0
+  publish_debug_image: false
+  debug_image_topic: ms_fusion/reloc_debug
+  model_path: ../models/best-0616-640_384.axmodel
+  conf_threshold: 0.25
+  nms_threshold: 0.45
+  num_classes: 15
+  max_det: 300
+  left_npu_affinity: 2
+  right_npu_affinity: 4
+  max_height_m: 0.3
+  max_reprojection_error_px: 4.0
+  min_offplane_stereo_pairs: 2
+  inlier_pixel_threshold_px: 12.0
+  min_support: 6
+  periodic_reloc_period_s: 10.0
+  periodic_multi_frame_confirm: true
+  periodic_reloc_retry_interval_s: 0.5
+  reloc_max_apply_delay_s: 2.0
+matched_cloud:
+  enable: false
+  topic: matched_point_cloud
+  qos: best_effort
+  front_cloud_topic: front_left_cloud
+  rear_cloud_topic: rear_right_cloud
+  map_frame: world
+  enable_fill: true
+  fill_angle_deg: 5.0
+  fill_distance: 15.0
+  min_range: 0.5
+  max_range: 12.0
+  front:
+    topic: /scan_front_left
+    frame_id: laser_front_left
+    x: 0.0
+    y: 0.0
+    yaw_deg: 0.0
+    enable_angle_filter: true
+    block_angle_ranges_deg:
+    - - -179.99
+      - -45.0
+  rear:
+    topic: /scan_rear_right
+    frame_id: laser_rear_right
+    x: 0.0
+    y: 0.0
+    yaw_deg: 0.0
+    enable_angle_filter: true
+    block_angle_ranges_deg:
+    - - 0.01
+      - 135.0
+loop:
+  enable: false
+  voc_path: ../models/xfeat_voc_robot_0729.dbow3
+  use_imu: true
+  save_image: false
+  image_topic: ''
+  load_previous_pose_graph: false
+  verbose_runtime_log: false
+  enable_rviz: true
+  save_loop_path: false
+  camera_pose_visual_stride: 10
+  max_sync_queue_size: 200
+  max_loop_keyframes: 5000
+  dbow_best_score_threshold: 0.55
+  dbow_candidate_score_threshold: 0.4
+  dbow_candidate_relative_ratio: 0.85
+  dbow_max_candidates: 3
+  dbow_query_max_results: 10       # 每次全局/远期查询的候选数，必须 > 0
+  dbow_remote_keyframe_gap: 500    # 帧龄超过此值归为远期；单位为 pose-graph 关键帧
+  dbow_candidate_separation: 50   # 优先候选的最小帧距；0 关闭帧距筛选
+  skip_dis: 0.1
+  skip_cnt: 1
+  skip_first_cnt: 10
+  min_loop_num: 8
+  lowe_ratio: 0.85
+  min_eligible_keyframe_gap: 100
+  pose_gate_max_yaw_deg: 45.0
+  pose_gate_max_translation_m: 30.0
+  pose_gate_max_reproj_rmse_px: 4.0
+  pose_gate_min_pnp_inlier_ratio: 0.60
+  loop_max_verified_candidates: 3
+  loop_cooldown_keyframes: 20
+  loop_cooldown_dedup_radius: 15
+  loop_dedup_window_keyframes: 60
+  enable_timing: true
+  timing_report_interval_s: 1.0
+  path_publish_stride: 10
+  max_visual_path_poses: 10000
+  keyframe_pose_topic: ms_fusion/keyframe_pose
+  keyframe_point_topic: ms_fusion/keyframe_point
+  keyframe_descriptors_topic: ms_fusion/keyframe_descriptors
+  raw_odometry_topic: /odometry_vio
+  odometry_sub_qos: best_effort
+  odometry_sub_qos_depth: 2000
+  odometry_rect_topic: /odometry
+  odometry_rect_qos: best_effort
+  odometry_rect_qos_depth: 10
+  max_correction_position_m: 5.0
+  max_correction_yaw_deg: 45
+  extrinsic_topic: ms_fusion/extrinsic
+  pose_graph_save_path: output/pose_graph/
+  output_path: output/

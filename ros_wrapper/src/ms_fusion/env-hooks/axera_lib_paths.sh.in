@@ -1,0 +1,2 @@
+# Axera BSP (libax_interpreter.so, libax_engine.so, ...)
+ament_prepend_unique_value LD_LIBRARY_PATH "/soc/lib"
