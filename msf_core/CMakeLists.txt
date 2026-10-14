@@ -153,17 +153,40 @@ install(FILES
   interface/ms_fusion_message.h
   DESTINATION include)
 
-# 单测：只依赖 Eigen 的纯数学模块直接编进测试，不链接 msf_core（避免拉进厂商 SDK）。
+# 单测：只编译被测的纯数学模块源文件，不链接 msf_core（避免拉进厂商 SDK）。
 # 找不到 ament_cmake_gtest 时跳过，不影响正常构建。
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest QUIET)
   if(ament_cmake_gtest_FOUND)
-    ament_add_gtest(test_upright_p2_solver
-      test/test_upright_p2_solver.cpp
-      src/vision/upright_p2_solver.cpp)
-    target_include_directories(test_upright_p2_solver PRIVATE
-      ${CMAKE_CURRENT_SOURCE_DIR}/include)
-    target_link_libraries(test_upright_p2_solver Eigen3::Eigen)
+    # 给每个测试统一加上头文件路径（include/ 与 interface/ 里的 eigen_utils.hpp）
+    function(msf_add_unit_test name)
+      ament_add_gtest(${name} test/${name}.cpp ${ARGN})
+      target_include_directories(${name} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/interface)
+      target_link_libraries(${name} Eigen3::Eigen yaml-cpp)
+    endfunction()
+
+    msf_add_unit_test(test_upright_p2_solver src/vision/upright_p2_solver.cpp)
+
+    msf_add_unit_test(test_rotation src/common/rotation.cpp)
+    target_link_libraries(test_rotation Sophus::Sophus)
+
+    msf_add_unit_test(test_camera
+      src/camera/pinhole_radtan4_camera.cpp
+      src/camera/pinhole_radtan5_camera.cpp)
+    target_link_libraries(test_camera ${OpenCV_LIBS} yaml-cpp)
+
+    msf_add_unit_test(test_preintegration
+      src/preintegration/preintegration_base.cpp
+      src/preintegration/preintegration_normal.cpp
+      src/common/rotation.cpp)
+    target_link_libraries(test_preintegration Sophus::Sophus ${OpenCV_LIBS} yaml-cpp)
+
+    msf_add_unit_test(test_pose_manifold
+      src/factors/pose_mainfold.cpp
+      src/common/rotation.cpp)
+    target_link_libraries(test_pose_manifold Sophus::Sophus Ceres::ceres)
   endif()
 endif()
 

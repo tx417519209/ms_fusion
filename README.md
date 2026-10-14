@@ -52,7 +52,8 @@
    要用 `tracking.extractor.feature_detector: superpoint` 时需自行准备模型并配置各 yaml 中的 `model_path`；
    配置里残留的 `superpoint_*.axmodel` 路径只在选择该检测器时才会被加载。
 5. **文档与评测覆盖有限**：目前有 TUM VI 的 room1 / outdoors4 等序列的评测记录，没有覆盖更多数据集的系统性对比；
-   单元测试很少（仅 `test_upright_p2_solver`），主要靠数据集回放验证。
+   单元测试只覆盖纯数学模块（旋转、相机模型、IMU 预积分、位姿流形、直立 2 点求解器），
+   特征跟踪、重定位、回环、优化器整体等主流程没有单测，主要靠数据集回放验证。
 6. **配置项很多、部分参数针对特定设备调过**：换设备或数据集时需要重新标定并按场景调参，
    TUM VI 各序列的 yaml 也是逐序列调出来的，不是一套参数通用。
 
@@ -212,7 +213,18 @@ colcon test --packages-select msf_core ms_fusion ms_fusion_loop
 colcon test-result --verbose
 ```
 
-`msf_core` 带有 `test_upright_p2_solver`（纯 Eigen 的数学模块单测，不依赖厂商 SDK），
+`msf_core` 的单测只编译被测的纯数学源文件，不链接 `msf_core`，不依赖厂商 SDK 和 NPU：
+
+| 测试 | 覆盖 |
+|---|---|
+| `test_rotation` | 旋转向量 / 四元数 / 欧拉角互转、`IntegratedRotation`、右雅可比与其逆 |
+| `test_camera` | pinhole-radtan4 / radtan5 的投影与去畸变往返 |
+| `test_preintegration` | IMU 预积分解析解、零残差自洽、四个雅可比与数值微分对拍、零偏一阶修正 |
+| `test_pose_manifold` | 位姿流形 Plus / Minus 互逆 |
+| `test_upright_p2_solver` | 直立 2 点绝对位姿解析解 |
+
+注意：相机 `unproject` 用固定 10 次不动点迭代去畸变，畸变大的画面边角会残留约 0.03 px 的往返误差。
+
 `ms_fusion` / `ms_fusion_loop` 只接入 `ament_lint_auto`。
 
 ## 自定义数据集
