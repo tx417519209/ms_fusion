@@ -220,11 +220,10 @@ void MsFusionManager::initMsFusionManager(const MsFusionConfigParams& config_par
 
 void MsFusionManager::stop() {
     is_finished_ = true;
-    // 线程都是持有各自 thread_mutex 后先查 is_finished_ 再 wait：先置位、再拿一次锁、再 notify，
-    // 线程要么拿锁后看到退出标志，要么已经在 wait 里被唤醒，不会错过唤醒
-    { Lock lock(ins_thread_mutex_); }
+    // 先置位、再拿一次各自的 deque mutex、再 notify：线程在该锁下检查谓词并 wait，不会错过唤醒
+    { Lock lock(imu_measurement_deque_mutex_); }
     ins_thread_sem_.notify_all();
-    { Lock lock(fusion_thread_mutex_); }
+    { Lock lock(vision_measurement_deque_mutex_); }
     fusion_thread_sem_.notify_all();
     if (ins_thread_.joinable()) {
         ins_thread_.join();
@@ -471,81 +470,79 @@ void MsFusionManager::runInsThread() {
     ImuMeasurement imu_measurement_pre, imu_measurement_cur;
     IntegrationState state = IntegrationState();
 
-    while (!is_finished_) {
-        Lock thread_lock(ins_thread_mutex_);
-        if (is_finished_) {
-            break;
-        }
-        ins_thread_sem_.wait(thread_lock);
-
-        while (!imu_measurement_deque_.empty()) {
-            // 拿到IMU观测值
-            {
-                Lock lock(imu_measurement_deque_mutex_);
-
-                // 赋值上一帧的IMU观测值
-                imu_measurement_pre = imu_measurement_cur;
-
-                // 拿到当前IMU观测值
-                imu_measurement_cur = imu_measurement_deque_.front();
-
-                // 删除buffer里面的imu数据
-                imu_measurement_deque_.pop_front();
+    while (true) {
+        // 拿到IMU观测值（等待、判空、取数都在 deque mutex 下完成）
+        {
+            Lock lock(imu_measurement_deque_mutex_);
+            ins_thread_sem_.wait(lock, [this] {
+                return is_finished_ || !imu_measurement_deque_.empty();
+            });
+            if (is_finished_) {
+                break;
             }
 
-            // 进行机械编排了
-            {
-                Lock lock(ins_mech_window_mutex_);
+            // 赋值上一帧的IMU观测值
+            imu_measurement_pre = imu_measurement_cur;
 
-                // 如果上一帧的状态不为空，拿到当前的状态
-                if (!ins_mech_window_.empty()) {
-                    state = ins_mech_window_.back().second;
-                }
+            // 拿到当前IMU观测值
+            imu_measurement_cur = imu_measurement_deque_.front();
 
-                // 保存当前帧的IMU观测值和对应的状态量
-                ins_mech_window_.emplace_back(imu_measurement_cur, IntegrationState());
+            // 删除buffer里面的imu数据
+            imu_measurement_deque_.pop_front();
+        }
 
-                // 如果系统已经完成了初始化
-                if (ms_fusion_state_ == FUSIONING) {
-                    if (is_optimized_ && state_mutex_.try_lock()) {
-                        // 这里进行了优化，需要从状态量开始进行机械
-                        is_optimized_ = false;
+        // 进行机械编排了
+        {
+            Lock lock(ins_mech_window_mutex_);
 
-                        // 拿到当前的状态量
-                        state = Preintegration::stateFromData(state_data_list_.back());
-
-                        // 开始进行机械编排
-                        InsMech::redoInsMechanization(integration_config_, state, reserved_ins_num_,
-                                                      ins_mech_window_);
-
-                        // 释放状态量锁
-                        state_mutex_.unlock();
-                    } else {
-                        // 没有进行优化，进行单次的机械编排
-                        InsMech::insMechanization(integration_config_, imu_measurement_pre, 
-                                                  imu_measurement_cur, state);
-
-                        // 保存机械编排的状态量
-                        ins_mech_window_.back().second = state;
-                    }
-                } else {
-                    if (ins_mech_window_.size() > MAXIMUM_INS_NUMBER) {
-                        ins_mech_window_.pop_front();
-                    }
-                }
-
-                // 拿到当前积分完成的状态
+            // 如果上一帧的状态不为空，拿到当前的状态
+            if (!ins_mech_window_.empty()) {
                 state = ins_mech_window_.back().second;
             }
 
-            // 进入融合状态，按 odom_publish_stride 发布（1=IMU 同频）
+            // 保存当前帧的IMU观测值和对应的状态量
+            ins_mech_window_.emplace_back(imu_measurement_cur, IntegrationState());
+
+            // 如果系统已经完成了初始化
             if (ms_fusion_state_ == FUSIONING) {
-                static int count = 0;
-                const int stride = std::max(
-                    1, ms_fusion_config_param_.base_config_params_.odom_publish_stride);
-                if ((count++ % stride) == 0) {
-                    pubOdomInfoToNode(state, "odom");
+                if (is_optimized_ && state_mutex_.try_lock()) {
+                    // 这里进行了优化，需要从状态量开始进行机械
+                    is_optimized_ = false;
+
+                    // 拿到当前的状态量
+                    state = Preintegration::stateFromData(state_data_list_.back());
+
+                    // 开始进行机械编排
+                    InsMech::redoInsMechanization(integration_config_, state, reserved_ins_num_,
+                                                  ins_mech_window_);
+
+                    // 释放状态量锁
+                    state_mutex_.unlock();
+                } else {
+                    // 没有进行优化，进行单次的机械编排
+                    InsMech::insMechanization(integration_config_, imu_measurement_pre, 
+                                              imu_measurement_cur, state);
+
+                    // 保存机械编排的状态量
+                    ins_mech_window_.back().second = state;
                 }
+            } else {
+                if (ins_mech_window_.size() > MAXIMUM_INS_NUMBER) {
+                    ins_mech_window_.pop_front();
+                }
+            }
+
+            // 拿到当前积分完成的状态
+            state = ins_mech_window_.back().second;
+        }
+
+        // 进入融合状态，按 odom_publish_stride 发布（1=IMU 同频）
+        if (ms_fusion_state_ == FUSIONING) {
+            static int count = 0;
+            const int stride = std::max(
+                1, ms_fusion_config_param_.base_config_params_.odom_publish_stride);
+            if ((count++ % stride) == 0) {
+                pubOdomInfoToNode(state, "odom");
             }
         }
     }
@@ -683,357 +680,360 @@ void MsFusionManager::runFusionThread() {
             .count();
     };
 
-    while (!is_finished_) {
-        Lock thread_lock(fusion_thread_mutex_);
-        if (is_finished_) {
-            break;
+    while (true) {
+        // 等待视觉观测值队列非空（谓词在 deque mutex 下检查）。退出时 getCurrVisionMeasurement()
+        // 不再等 IMU 直接返回 false，所以谓词和后续处理都要认退出标志
+        {
+            Lock lock(vision_measurement_deque_mutex_);
+            fusion_thread_sem_.wait(lock, [this] {
+                return is_finished_ || !vision_measurement_deque_.empty();
+            });
+            if (is_finished_) {
+                break;
+            }
         }
-        fusion_thread_sem_.wait(thread_lock);
 
-        // 退出时 getCurrVisionMeasurement() 不再等 IMU 直接返回 false，队列可能非空，必须也查退出标志
-        while (!is_finished_ && !vision_measurement_deque_.empty()) {
-            // 拿到视觉观测值
-            if (!getCurrVisionMeasurement(vision_measurement_cur)) {
-                continue;
-            }
-            const auto backend_process_begin = MonotonicRawClock::now();
-            // Snapshot immediately after dequeue/IMU synchronization.  Taking
-            // this later would incorrectly charge reloc-service or optimizer
-            // work to backend queue waiting.
-            const double backend_queue_wait_ms =
-                queueWaitMs(vision_measurement_cur, backend_process_begin);
-            size_t backend_queue_size = 0;
+        // 拿到视觉观测值
+        if (!getCurrVisionMeasurement(vision_measurement_cur)) {
+            continue;
+        }
+        const auto backend_process_begin = MonotonicRawClock::now();
+        // Snapshot immediately after dequeue/IMU synchronization.  Taking
+        // this later would incorrectly charge reloc-service or optimizer
+        // work to backend queue waiting.
+        const double backend_queue_wait_ms =
+            queueWaitMs(vision_measurement_cur, backend_process_begin);
+        size_t backend_queue_size = 0;
+        {
+            Lock queue_lock(vision_measurement_deque_mutex_);
+            backend_queue_size = vision_measurement_deque_.size();
+        }
+        // 读出并清零自上次读取以来 pushVisionMeasurement() 实时模式丢弃的帧数
+        const size_t backend_dropped_for_realtime =
+            vision_measurement_dropped_for_realtime_count_.exchange(
+                0, std::memory_order_relaxed);
+
+        MSF_VLOG << "vision_measurement_cur feature size: "
+                 << vision_measurement_cur.track_feat_info.size() << std::endl;
+
+        MSF_VLOG << "Vision measurement buffer size: " << backend_queue_size << std::endl;
+
+        // 数据进行融合（初始化和非线性优化）
+        if (ms_fusion_state_ == INITIALIZING) {
+            BackendInitTiming init_timing;
+            init_timing.queue_wait_ms = backend_queue_wait_ms;
+            init_timing.queue_size = static_cast<double>(backend_queue_size);
+            init_timing.dropped_for_realtime =
+                static_cast<double>(backend_dropped_for_realtime);
+            init_timing.input_features =
+                static_cast<double>(vision_measurement_cur.track_feat_info.size());
+            bool init_res = false;
+
             {
-                Lock queue_lock(vision_measurement_deque_mutex_);
-                backend_queue_size = vision_measurement_deque_.size();
-            }
-            // 读出并清零自上次读取以来 pushVisionMeasurement() 实时模式丢弃的帧数
-            const size_t backend_dropped_for_realtime =
-                vision_measurement_dropped_for_realtime_count_.exchange(
-                    0, std::memory_order_relaxed);
+                // 进行初始化，上锁
+                Lock state_lock(state_mutex_);
+                Lock ins_mech_window_lock(ins_mech_window_mutex_);
 
-            MSF_VLOG << "vision_measurement_cur feature size: "
-                     << vision_measurement_cur.track_feat_info.size() << std::endl;
-
-            MSF_VLOG << "Vision measurement buffer size: " << backend_queue_size << std::endl;
-
-            // 数据进行融合（初始化和非线性优化）
-            if (ms_fusion_state_ == INITIALIZING) {
-                BackendInitTiming init_timing;
-                init_timing.queue_wait_ms = backend_queue_wait_ms;
-                init_timing.queue_size = static_cast<double>(backend_queue_size);
-                init_timing.dropped_for_realtime =
-                    static_cast<double>(backend_dropped_for_realtime);
-                init_timing.input_features =
-                    static_cast<double>(vision_measurement_cur.track_feat_info.size());
-                bool init_res = false;
-
-                {
-                    // 进行初始化，上锁
-                    Lock state_lock(state_mutex_);
-                    Lock ins_mech_window_lock(ins_mech_window_mutex_);
-
-                    const auto init_process_begin = MonotonicRawClock::now();
-                    if (!ms_fusion_config_param_.reloc_config_params_.enable) {
-                        // 没有使用重定位，进行初始化
-                        init_res = initialize_ptr_->process(ins_mech_window_, vision_measurement_cur,
-                                                            timestamp_list_, state_data_list_);
-                    } else {
-                        // 使用重定位，进行初始化
-                        init_res = initialize_ptr_->relocInitProcess(
-                            ins_mech_window_, vision_measurement_cur, timestamp_list_,
-                            state_data_list_);
-                    }
-                    const auto init_process_end = MonotonicRawClock::now();
-                    init_timing.process_ms = std::chrono::duration<double, std::milli>(
-                                                 init_process_end - init_process_begin)
-                                                 .count();
-
-                    // INITIALIZING 阶段自己的静止转运动边沿检测：上面
-                    // process()/relocInitProcess() 用的是 initialize_ptr_ 内部
-                    // 那套静止判据，跟 addNewTimeNode() 里的 runtime_static_detector_
-                    // 是两回事，后者只在 INIT_OPTIMIZING/FUSIONING 才会被驱动——
-                    // 不在这里单独判一次的话，反复重试卡在 INITIALIZING（比如
-                    // reloc bootstrap 一直不过）期间挪动设备，init_timeout_s
-                    // 永远不会重新计时。
-                    const bool bootstrap_is_static = initialize_ptr_->isStatic();
-                    if (!bootstrap_is_static && init_bootstrap_prev_static_) {
-                        init_start_time_ns_.store(monotonicRawNowNs(), std::memory_order_relaxed);
-                    }
-                    init_bootstrap_prev_static_ = bootstrap_is_static;
-
-                    // 如果初始化成功了
-                    if (init_res) {
-                        const auto init_finalize_begin = MonotonicRawClock::now();
-
-                        // 同步补静止标记：静止检测开启时 Initializer::process/
-                        // relocInitProcess 只有在静止判据（checkImuStatic）确认通过时
-                        // 才会成功，第一个状态本身就是"确认静止"的；关闭时（边动边
-                        // 初始化）没有任何静止证据，不能加零速伪观测
-                        const bool static_init = initialize_ptr_->staticCheckEnabled();
-                        static_state_list_.push_back(static_init);
-
-                        // 边动边初始化：Initializer 给的速度是 0，用初始化时刻的轮速
-                        // 作为初值（没有轮速时保持 0），先验也相应放宽
-                        bool init_velocity_from_odom = false;
-                        if (!static_init) {
-                            init_velocity_from_odom =
-                                applyOdomInitialVelocityLocked(state_data_list_.back());
-                        }
-
-                        // 在优化类里面构造先验信息
-                        optimize_ptr_->constructPriorInfo(
-                            state_data_list_.back(),
-                            static_init ? Optimizer::PriorMode::kStatic
-                                        : (init_velocity_from_odom
-                                               ? Optimizer::PriorMode::kMovingOdomVelocity
-                                               : Optimizer::PriorMode::kMovingNoVelocity));
-
-                        // 添加特征点信息
-                        feature_manager_ptr_->tryAddKeyframe(
-                            vision_measurement_cur.timestamp,
-                            vision_measurement_cur.track_feat_info, 0.0);
-
-                        // 特征点进行三角化
-                        feature_manager_ptr_->triangulate(vision_measurement_cur.timestamp);
-                        updateTemporalKeyframeReference(vision_measurement_cur);
-
-                        // 更新系统状态
-                        ms_fusion_state_ = MsFusionState::INIT_OPTIMIZING;
-
-                        // 关掉 PipelineTiming 的 bootstrap 简洁摘要模式，恢复运行期完整的
-                        // frontend/backend/reloc 多行报表；同时清空累计窗口，避免刚才
-                        // INITIALIZING 阶段（tracking 被软门控跳过）的样本混进第一份报表。
-                        PipelineTiming::setBootstrapPhase(false);
-
-                        // 更新优化标志位
-                        is_optimized_ = true;
-
-                        // 打印初始化成功，用横幅样式让这一行在滚动日志里显眼
-                        // 附带静止检测开关和初始 bg：禁用静止检测时 bg 置 0，不是窗口陀螺均值
-                        const Eigen::Vector3d init_bg =
-                            Preintegration::stateFromData(state_data_list_.back()).bg;
-                        MSF_ILOG << "========== Initialization successful! (static_check="
-                                 << (initialize_ptr_->staticCheckEnabled() ? "on" : "off")
-                                 << " bg=[" << std::fixed << std::setprecision(6) << init_bg.x() << ", "
-                                 << init_bg.y() << ", " << init_bg.z() << "]) ==========" << std::endl;
-                        init_timing.finalize_ms = std::chrono::duration<double, std::milli>(
-                                                      MonotonicRawClock::now() - init_finalize_begin)
-                                                      .count();
-                        init_timing.success = 1.0;
-
-                        if (ms_fusion_config_param_.reloc_config_params_.enable) {
-                            // relocInitProcess() 已经用 reloc 建立了第一个状态，不再走
-                            // "初始化后第一次硬对齐"（那条路径是单帧直接覆盖）；初始位姿
-                            // 的正确性改由下面的初始化后验证（多帧确认）把关。
-                            initial_hard_align_done_ = true;
-
-                            // 同时把周期重定位的计时基准重置成"现在"：
-                            // last_periodic_reloc_success_timestamp_ 初值是 -1.0，如果这里
-                            // 不重置，updatePeriodicRelocGate() 会因为"距上次成功已经过了
-                            // (当前时间戳-(-1.0))"远超 period_s 而判定成立，导致初始化刚建好
-                            // 状态，下一帧立刻又触发一次周期 reloc，而不是等满配置的 period_s。
-                            // 同一次调用还会让 periodic_reloc_request_id_ 递增一次：即便此刻
-                            // 队列里还残留 bootstrap 阶段派发、结果刚好在这一帧之后才流到后端
-                            // 的旧结果，它们的 trigger_source 是 kBootstrap（不是
-                            // kPeriodic），consumePeriodicRelocMeasurement() 本就不会把它们当
-                            // 周期修正消费；这里递增编号是双重保险，顺带让"旧周期请求"（如果
-                            // 恰好存在）明确失效，不依赖 trigger_source 单一判据。
-                            // 初始位姿取自单帧 reloc，未经交叉验证：结束可能残留的周期请求，
-                            // 同时置位初始化后验证（同一次状态转换，见 beginInitVerify）。
-                            beginInitVerify(vision_measurement_cur.timestamp);
-                            MSF_ILOG << "[reloc] init_verify_pending t="
-                                     << vision_measurement_cur.timestamp << std::endl;
-                        }
-                    }
+                const auto init_process_begin = MonotonicRawClock::now();
+                if (!ms_fusion_config_param_.reloc_config_params_.enable) {
+                    // 没有使用重定位，进行初始化
+                    init_res = initialize_ptr_->process(ins_mech_window_, vision_measurement_cur,
+                                                        timestamp_list_, state_data_list_);
+                } else {
+                    // 使用重定位，进行初始化
+                    init_res = initialize_ptr_->relocInitProcess(
+                        ins_mech_window_, vision_measurement_cur, timestamp_list_,
+                        state_data_list_);
                 }
+                const auto init_process_end = MonotonicRawClock::now();
+                init_timing.process_ms = std::chrono::duration<double, std::milli>(
+                                             init_process_end - init_process_begin)
+                                             .count();
+
+                // INITIALIZING 阶段自己的静止转运动边沿检测：上面
+                // process()/relocInitProcess() 用的是 initialize_ptr_ 内部
+                // 那套静止判据，跟 addNewTimeNode() 里的 runtime_static_detector_
+                // 是两回事，后者只在 INIT_OPTIMIZING/FUSIONING 才会被驱动——
+                // 不在这里单独判一次的话，反复重试卡在 INITIALIZING（比如
+                // reloc bootstrap 一直不过）期间挪动设备，init_timeout_s
+                // 永远不会重新计时。
+                const bool bootstrap_is_static = initialize_ptr_->isStatic();
+                if (!bootstrap_is_static && init_bootstrap_prev_static_) {
+                    init_start_time_ns_.store(monotonicRawNowNs(), std::memory_order_relaxed);
+                }
+                init_bootstrap_prev_static_ = bootstrap_is_static;
+
+                // 如果初始化成功了
                 if (init_res) {
-                    init_timing.estimated_odom_publish_ms = publishEstimatedOdom();
-                }
-                init_timing.total_ms = std::chrono::duration<double, std::milli>(
-                                           MonotonicRawClock::now() - backend_process_begin)
-                                           .count();
-                PipelineTiming::recordBackendInit(init_timing);
-            } else if (ms_fusion_state_ == INIT_OPTIMIZING) {
-                // on-demand /reloc：任意帧成功即可对齐
-                FrameBackendTiming backend_timing;
-                backend_timing.queue_wait_ms = backend_queue_wait_ms;
-                backend_timing.queue_size = static_cast<double>(backend_queue_size);
-                backend_timing.dropped_for_realtime =
-                    static_cast<double>(backend_dropped_for_realtime);
-                backend_timing.input_features =
-                    static_cast<double>(vision_measurement_cur.track_feat_info.size());
-                consumeRelocRequest(vision_measurement_cur, backend_timing);
+                    const auto init_finalize_begin = MonotonicRawClock::now();
 
-                //  判断这一帧是不是关键帧
-                const bool is_keyframe =
-                    addNewMeasurementTimeNode(vision_measurement_cur, backend_timing);
-                if (!is_keyframe) {
-                    backend_timing.estimated_odom_publish_ms = publishEstimatedOdom();
-                    backend_timing.total_ms = std::chrono::duration<double, std::milli>(
-                                                  MonotonicRawClock::now() - backend_process_begin)
+                    // 同步补静止标记：静止检测开启时 Initializer::process/
+                    // relocInitProcess 只有在静止判据（checkImuStatic）确认通过时
+                    // 才会成功，第一个状态本身就是"确认静止"的；关闭时（边动边
+                    // 初始化）没有任何静止证据，不能加零速伪观测
+                    const bool static_init = initialize_ptr_->staticCheckEnabled();
+                    static_state_list_.push_back(static_init);
+
+                    // 边动边初始化：Initializer 给的速度是 0，用初始化时刻的轮速
+                    // 作为初值（没有轮速时保持 0），先验也相应放宽
+                    bool init_velocity_from_odom = false;
+                    if (!static_init) {
+                        init_velocity_from_odom =
+                            applyOdomInitialVelocityLocked(state_data_list_.back());
+                    }
+
+                    // 在优化类里面构造先验信息
+                    optimize_ptr_->constructPriorInfo(
+                        state_data_list_.back(),
+                        static_init ? Optimizer::PriorMode::kStatic
+                                    : (init_velocity_from_odom
+                                           ? Optimizer::PriorMode::kMovingOdomVelocity
+                                           : Optimizer::PriorMode::kMovingNoVelocity));
+
+                    // 添加特征点信息
+                    feature_manager_ptr_->tryAddKeyframe(
+                        vision_measurement_cur.timestamp,
+                        vision_measurement_cur.track_feat_info, 0.0);
+
+                    // 特征点进行三角化
+                    feature_manager_ptr_->triangulate(vision_measurement_cur.timestamp);
+                    updateTemporalKeyframeReference(vision_measurement_cur);
+
+                    // 更新系统状态
+                    ms_fusion_state_ = MsFusionState::INIT_OPTIMIZING;
+
+                    // 关掉 PipelineTiming 的 bootstrap 简洁摘要模式，恢复运行期完整的
+                    // frontend/backend/reloc 多行报表；同时清空累计窗口，避免刚才
+                    // INITIALIZING 阶段（tracking 被软门控跳过）的样本混进第一份报表。
+                    PipelineTiming::setBootstrapPhase(false);
+
+                    // 更新优化标志位
+                    is_optimized_ = true;
+
+                    // 打印初始化成功，用横幅样式让这一行在滚动日志里显眼
+                    // 附带静止检测开关和初始 bg：禁用静止检测时 bg 置 0，不是窗口陀螺均值
+                    const Eigen::Vector3d init_bg =
+                        Preintegration::stateFromData(state_data_list_.back()).bg;
+                    MSF_ILOG << "========== Initialization successful! (static_check="
+                             << (initialize_ptr_->staticCheckEnabled() ? "on" : "off")
+                             << " bg=[" << std::fixed << std::setprecision(6) << init_bg.x() << ", "
+                             << init_bg.y() << ", " << init_bg.z() << "]) ==========" << std::endl;
+                    init_timing.finalize_ms = std::chrono::duration<double, std::milli>(
+                                                  MonotonicRawClock::now() - init_finalize_begin)
                                                   .count();
-                    PipelineTiming::recordBackendRejected(backend_timing);
-                    continue;
+                    init_timing.success = 1.0;
+
+                    if (ms_fusion_config_param_.reloc_config_params_.enable) {
+                        // relocInitProcess() 已经用 reloc 建立了第一个状态，不再走
+                        // "初始化后第一次硬对齐"（那条路径是单帧直接覆盖）；初始位姿
+                        // 的正确性改由下面的初始化后验证（多帧确认）把关。
+                        initial_hard_align_done_ = true;
+
+                        // 同时把周期重定位的计时基准重置成"现在"：
+                        // last_periodic_reloc_success_timestamp_ 初值是 -1.0，如果这里
+                        // 不重置，updatePeriodicRelocGate() 会因为"距上次成功已经过了
+                        // (当前时间戳-(-1.0))"远超 period_s 而判定成立，导致初始化刚建好
+                        // 状态，下一帧立刻又触发一次周期 reloc，而不是等满配置的 period_s。
+                        // 同一次调用还会让 periodic_reloc_request_id_ 递增一次：即便此刻
+                        // 队列里还残留 bootstrap 阶段派发、结果刚好在这一帧之后才流到后端
+                        // 的旧结果，它们的 trigger_source 是 kBootstrap（不是
+                        // kPeriodic），consumePeriodicRelocMeasurement() 本就不会把它们当
+                        // 周期修正消费；这里递增编号是双重保险，顺带让"旧周期请求"（如果
+                        // 恰好存在）明确失效，不依赖 trigger_source 单一判据。
+                        // 初始位姿取自单帧 reloc，未经交叉验证：结束可能残留的周期请求，
+                        // 同时置位初始化后验证（同一次状态转换，见 beginInitVerify）。
+                        beginInitVerify(vision_measurement_cur.timestamp);
+                        MSF_ILOG << "[reloc] init_verify_pending t="
+                                 << vision_measurement_cur.timestamp << std::endl;
+                    }
                 }
+            }
+            if (init_res) {
+                init_timing.estimated_odom_publish_ms = publishEstimatedOdom();
+            }
+            init_timing.total_ms = std::chrono::duration<double, std::milli>(
+                                       MonotonicRawClock::now() - backend_process_begin)
+                                       .count();
+            PipelineTiming::recordBackendInit(init_timing);
+        } else if (ms_fusion_state_ == INIT_OPTIMIZING) {
+            // on-demand /reloc：任意帧成功即可对齐
+            FrameBackendTiming backend_timing;
+            backend_timing.queue_wait_ms = backend_queue_wait_ms;
+            backend_timing.queue_size = static_cast<double>(backend_queue_size);
+            backend_timing.dropped_for_realtime =
+                static_cast<double>(backend_dropped_for_realtime);
+            backend_timing.input_features =
+                static_cast<double>(vision_measurement_cur.track_feat_info.size());
+            consumeRelocRequest(vision_measurement_cur, backend_timing);
 
-                // 如果是关键帧，进行优化
-                const auto optimize_begin = MonotonicRawClock::now();
-                state_mutex_.lock();
-                optimize_ptr_->initOptimize(timestamp_list_, state_data_list_, 
-                                            preintegration_list_, odom_preintegration_list_);
-                state_mutex_.unlock();
-                backend_timing.optimize_ms = std::chrono::duration<double, std::milli>(
-                    MonotonicRawClock::now() - optimize_begin).count();
-                backend_timing.optimize_build_ms = optimize_ptr_->lastOptimizeBuildMs();
-                backend_timing.optimize_solve_ms = optimize_ptr_->lastOptimizeSolveMs();
-                backend_timing.optimize_post_ms = optimize_ptr_->lastOptimizePostMs();
-                backend_timing.optimize_iterations =
-                    static_cast<double>(optimize_ptr_->lastOptimizeIterations());
-                backend_timing.num_residual_blocks =
-                    static_cast<double>(optimize_ptr_->lastOptimizeResidualBlocks());
-                {
-                    const auto& rs = optimize_ptr_->lastResidualStats();
-                    backend_timing.visual_residual_rmse = rs.visual_rmse;
-                    backend_timing.visual_residual_p50 = rs.visual_p50;
-                    backend_timing.visual_residual_p95 = rs.visual_p95;
-                    backend_timing.visual_residual_max = rs.visual_max;
-                    backend_timing.visual_residual_blocks = rs.visual_blocks;
-                    backend_timing.new_outlier_obs = rs.new_outlier_obs;
-                    backend_timing.stereo_factor_pct = rs.stereo_factor_pct;
-                    backend_timing.imu_residual_mean = rs.imu_norm_mean;
-                    backend_timing.imu_residual_max = rs.imu_norm_max;
-                    backend_timing.odom_residual_rot = rs.odom_rot_mean;
-                    backend_timing.odom_residual_trans = rs.odom_trans_mean;
-                    backend_timing.residual_eval_ms = rs.eval_ms;
-                }
-
-                is_optimized_ = true;
-
-                // 如果滑窗满了，要进行边缘化
-                const auto& window_size = 
-                    ms_fusion_config_param_.optimizer_config_params_.window_size;
-
-                // 滑窗满了，要开始进行边缘化了
-                if (state_data_list_.size() == static_cast<size_t>(window_size)) {
-                    Lock state_lock(state_mutex_);
-
-                    const auto marginalize_begin = MonotonicRawClock::now();
-                    // 进行初始化的边缘化了
-                    optimize_ptr_->initMarginalize(timestamp_list_, state_data_list_,
-                                                   preintegration_list_, odom_preintegration_list_,
-                                                   static_state_list_);
-                    backend_timing.marginalize_ms = std::chrono::duration<double, std::milli>(
-                        MonotonicRawClock::now() - marginalize_begin).count();
-
-                    // 更新状态量
-                    ms_fusion_state_ = MsFusionState::FUSIONING;
-
-                    MSF_ILOG << "Initialization Optimization successfual!" << std::endl;
-                }
-
-                updateTemporalKeyframeReference(vision_measurement_cur);
-                publishKeyframeLoop(vision_measurement_cur, &backend_timing);
-                fillBackendMetrics(vision_measurement_cur, backend_timing);
+            //  判断这一帧是不是关键帧
+            const bool is_keyframe =
+                addNewMeasurementTimeNode(vision_measurement_cur, backend_timing);
+            if (!is_keyframe) {
                 backend_timing.estimated_odom_publish_ms = publishEstimatedOdom();
                 backend_timing.total_ms = std::chrono::duration<double, std::milli>(
                                               MonotonicRawClock::now() - backend_process_begin)
                                               .count();
-                PipelineTiming::recordBackend(backend_timing);
+                PipelineTiming::recordBackendRejected(backend_timing);
+                continue;
+            }
 
-            } else if (ms_fusion_state_ == FUSIONING) {
-                // on-demand /reloc：任意帧成功即可对齐（不必等关键帧）
-                FrameBackendTiming backend_timing;
-                backend_timing.queue_wait_ms = backend_queue_wait_ms;
-                backend_timing.queue_size = static_cast<double>(backend_queue_size);
-                backend_timing.dropped_for_realtime =
-                    static_cast<double>(backend_dropped_for_realtime);
-                backend_timing.input_features =
-                    static_cast<double>(vision_measurement_cur.track_feat_info.size());
-                consumeRelocRequest(vision_measurement_cur, backend_timing);
+            // 如果是关键帧，进行优化
+            const auto optimize_begin = MonotonicRawClock::now();
+            state_mutex_.lock();
+            optimize_ptr_->initOptimize(timestamp_list_, state_data_list_, 
+                                        preintegration_list_, odom_preintegration_list_);
+            state_mutex_.unlock();
+            backend_timing.optimize_ms = std::chrono::duration<double, std::milli>(
+                MonotonicRawClock::now() - optimize_begin).count();
+            backend_timing.optimize_build_ms = optimize_ptr_->lastOptimizeBuildMs();
+            backend_timing.optimize_solve_ms = optimize_ptr_->lastOptimizeSolveMs();
+            backend_timing.optimize_post_ms = optimize_ptr_->lastOptimizePostMs();
+            backend_timing.optimize_iterations =
+                static_cast<double>(optimize_ptr_->lastOptimizeIterations());
+            backend_timing.num_residual_blocks =
+                static_cast<double>(optimize_ptr_->lastOptimizeResidualBlocks());
+            {
+                const auto& rs = optimize_ptr_->lastResidualStats();
+                backend_timing.visual_residual_rmse = rs.visual_rmse;
+                backend_timing.visual_residual_p50 = rs.visual_p50;
+                backend_timing.visual_residual_p95 = rs.visual_p95;
+                backend_timing.visual_residual_max = rs.visual_max;
+                backend_timing.visual_residual_blocks = rs.visual_blocks;
+                backend_timing.new_outlier_obs = rs.new_outlier_obs;
+                backend_timing.stereo_factor_pct = rs.stereo_factor_pct;
+                backend_timing.imu_residual_mean = rs.imu_norm_mean;
+                backend_timing.imu_residual_max = rs.imu_norm_max;
+                backend_timing.odom_residual_rot = rs.odom_rot_mean;
+                backend_timing.odom_residual_trans = rs.odom_trans_mean;
+                backend_timing.residual_eval_ms = rs.eval_ms;
+            }
 
-                // 判断当前帧是不是关键帧
-                const bool is_keyframe =
-                    addNewMeasurementTimeNode(vision_measurement_cur, backend_timing);
-                if (!is_keyframe) {
-                    backend_timing.estimated_odom_publish_ms = publishEstimatedOdom();
-                    backend_timing.total_ms = std::chrono::duration<double, std::milli>(
-                                                  MonotonicRawClock::now() - backend_process_begin)
-                                                  .count();
-                    PipelineTiming::recordBackendRejected(backend_timing);
-                    continue;
-                }
+            is_optimized_ = true;
 
-                // 如果是关键帧，进行优化
-                const auto optimize_begin = MonotonicRawClock::now();
-                state_mutex_.lock();
-                optimize_ptr_->optimize(timestamp_list_, state_data_list_, preintegration_list_,
-                                        odom_preintegration_list_, static_state_list_);
-                state_mutex_.unlock();
-                backend_timing.optimize_ms = std::chrono::duration<double, std::milli>(
-                    MonotonicRawClock::now() - optimize_begin).count();
-                backend_timing.optimize_build_ms = optimize_ptr_->lastOptimizeBuildMs();
-                backend_timing.optimize_solve_ms = optimize_ptr_->lastOptimizeSolveMs();
-                backend_timing.optimize_post_ms = optimize_ptr_->lastOptimizePostMs();
-                backend_timing.solver_residual_eval_ms = optimize_ptr_->lastSolverResidualEvalMs();
-                backend_timing.solver_jacobian_eval_ms = optimize_ptr_->lastSolverJacobianEvalMs();
-                backend_timing.solver_linear_solve_ms = optimize_ptr_->lastSolverLinearSolveMs();
-                backend_timing.optimize_iterations =
-                    static_cast<double>(optimize_ptr_->lastOptimizeIterations());
-                backend_timing.num_residual_blocks =
-                    static_cast<double>(optimize_ptr_->lastOptimizeResidualBlocks());
-                backend_timing.zupt_factors =
-                    static_cast<double>(optimize_ptr_->lastZuptFactorCount());
-                {
-                    const auto& rs = optimize_ptr_->lastResidualStats();
-                    backend_timing.visual_residual_rmse = rs.visual_rmse;
-                    backend_timing.visual_residual_p50 = rs.visual_p50;
-                    backend_timing.visual_residual_p95 = rs.visual_p95;
-                    backend_timing.visual_residual_max = rs.visual_max;
-                    backend_timing.visual_residual_blocks = rs.visual_blocks;
-                    backend_timing.new_outlier_obs = rs.new_outlier_obs;
-                    backend_timing.stereo_factor_pct = rs.stereo_factor_pct;
-                    backend_timing.imu_residual_mean = rs.imu_norm_mean;
-                    backend_timing.imu_residual_max = rs.imu_norm_max;
-                    backend_timing.odom_residual_rot = rs.odom_rot_mean;
-                    backend_timing.odom_residual_trans = rs.odom_trans_mean;
-                    backend_timing.residual_eval_ms = rs.eval_ms;
-                }
-                {
-                    const auto& ks = optimize_ptr_->lastKeyframeAdaptStats();
-                    backend_timing.kf_min_interval_s = ks.keyframe_min_interval_s;
-                    backend_timing.stereo_disp_px = ks.median_stereo_disparity_px;
-                    backend_timing.stereo_scale = optimize_ptr_->lastStereoScaleRatio();
-                    backend_timing.stereo_scale_n =
-                        static_cast<double>(optimize_ptr_->lastStereoScaleSamples());
-                    backend_timing.kf_support = ks.kf_support;
-                    backend_timing.kf_floor_s = ks.kf_floor_s;
-                    backend_timing.vision_sigma_px = optimize_ptr_->lastVisionSigmaPx();
-                    backend_timing.vision_noise_px = optimize_ptr_->lastVisionNoisePx();
-                }
+            // 如果滑窗满了，要进行边缘化
+            const auto& window_size = 
+                ms_fusion_config_param_.optimizer_config_params_.window_size;
 
-                // 更新标志位
-                is_optimized_ = true;
+            // 滑窗满了，要开始进行边缘化了
+            if (state_data_list_.size() == static_cast<size_t>(window_size)) {
+                Lock state_lock(state_mutex_);
 
-                // 进行边缘化
                 const auto marginalize_begin = MonotonicRawClock::now();
-                state_mutex_.lock();
-                optimize_ptr_->marginalize(timestamp_list_, state_data_list_, preintegration_list_,
-                                           odom_preintegration_list_, static_state_list_);
-                state_mutex_.unlock();
+                // 进行初始化的边缘化了
+                optimize_ptr_->initMarginalize(timestamp_list_, state_data_list_,
+                                               preintegration_list_, odom_preintegration_list_,
+                                               static_state_list_);
                 backend_timing.marginalize_ms = std::chrono::duration<double, std::milli>(
                     MonotonicRawClock::now() - marginalize_begin).count();
 
-                // Publish only IDs retained by the completed window update.
-                updateTemporalKeyframeReference(vision_measurement_cur);
-                publishKeyframeLoop(vision_measurement_cur, &backend_timing);
-                fillBackendMetrics(vision_measurement_cur, backend_timing);
+                // 更新状态量
+                ms_fusion_state_ = MsFusionState::FUSIONING;
+
+                MSF_ILOG << "Initialization Optimization successfual!" << std::endl;
+            }
+
+            updateTemporalKeyframeReference(vision_measurement_cur);
+            publishKeyframeLoop(vision_measurement_cur, &backend_timing);
+            fillBackendMetrics(vision_measurement_cur, backend_timing);
+            backend_timing.estimated_odom_publish_ms = publishEstimatedOdom();
+            backend_timing.total_ms = std::chrono::duration<double, std::milli>(
+                                          MonotonicRawClock::now() - backend_process_begin)
+                                          .count();
+            PipelineTiming::recordBackend(backend_timing);
+
+        } else if (ms_fusion_state_ == FUSIONING) {
+            // on-demand /reloc：任意帧成功即可对齐（不必等关键帧）
+            FrameBackendTiming backend_timing;
+            backend_timing.queue_wait_ms = backend_queue_wait_ms;
+            backend_timing.queue_size = static_cast<double>(backend_queue_size);
+            backend_timing.dropped_for_realtime =
+                static_cast<double>(backend_dropped_for_realtime);
+            backend_timing.input_features =
+                static_cast<double>(vision_measurement_cur.track_feat_info.size());
+            consumeRelocRequest(vision_measurement_cur, backend_timing);
+
+            // 判断当前帧是不是关键帧
+            const bool is_keyframe =
+                addNewMeasurementTimeNode(vision_measurement_cur, backend_timing);
+            if (!is_keyframe) {
                 backend_timing.estimated_odom_publish_ms = publishEstimatedOdom();
                 backend_timing.total_ms = std::chrono::duration<double, std::milli>(
                                               MonotonicRawClock::now() - backend_process_begin)
                                               .count();
-                PipelineTiming::recordBackend(backend_timing);
+                PipelineTiming::recordBackendRejected(backend_timing);
+                continue;
             }
+
+            // 如果是关键帧，进行优化
+            const auto optimize_begin = MonotonicRawClock::now();
+            state_mutex_.lock();
+            optimize_ptr_->optimize(timestamp_list_, state_data_list_, preintegration_list_,
+                                    odom_preintegration_list_, static_state_list_);
+            state_mutex_.unlock();
+            backend_timing.optimize_ms = std::chrono::duration<double, std::milli>(
+                MonotonicRawClock::now() - optimize_begin).count();
+            backend_timing.optimize_build_ms = optimize_ptr_->lastOptimizeBuildMs();
+            backend_timing.optimize_solve_ms = optimize_ptr_->lastOptimizeSolveMs();
+            backend_timing.optimize_post_ms = optimize_ptr_->lastOptimizePostMs();
+            backend_timing.solver_residual_eval_ms = optimize_ptr_->lastSolverResidualEvalMs();
+            backend_timing.solver_jacobian_eval_ms = optimize_ptr_->lastSolverJacobianEvalMs();
+            backend_timing.solver_linear_solve_ms = optimize_ptr_->lastSolverLinearSolveMs();
+            backend_timing.optimize_iterations =
+                static_cast<double>(optimize_ptr_->lastOptimizeIterations());
+            backend_timing.num_residual_blocks =
+                static_cast<double>(optimize_ptr_->lastOptimizeResidualBlocks());
+            backend_timing.zupt_factors =
+                static_cast<double>(optimize_ptr_->lastZuptFactorCount());
+            {
+                const auto& rs = optimize_ptr_->lastResidualStats();
+                backend_timing.visual_residual_rmse = rs.visual_rmse;
+                backend_timing.visual_residual_p50 = rs.visual_p50;
+                backend_timing.visual_residual_p95 = rs.visual_p95;
+                backend_timing.visual_residual_max = rs.visual_max;
+                backend_timing.visual_residual_blocks = rs.visual_blocks;
+                backend_timing.new_outlier_obs = rs.new_outlier_obs;
+                backend_timing.stereo_factor_pct = rs.stereo_factor_pct;
+                backend_timing.imu_residual_mean = rs.imu_norm_mean;
+                backend_timing.imu_residual_max = rs.imu_norm_max;
+                backend_timing.odom_residual_rot = rs.odom_rot_mean;
+                backend_timing.odom_residual_trans = rs.odom_trans_mean;
+                backend_timing.residual_eval_ms = rs.eval_ms;
+            }
+            {
+                const auto& ks = optimize_ptr_->lastKeyframeAdaptStats();
+                backend_timing.kf_min_interval_s = ks.keyframe_min_interval_s;
+                backend_timing.stereo_disp_px = ks.median_stereo_disparity_px;
+                backend_timing.stereo_scale = optimize_ptr_->lastStereoScaleRatio();
+                backend_timing.stereo_scale_n =
+                    static_cast<double>(optimize_ptr_->lastStereoScaleSamples());
+                backend_timing.kf_support = ks.kf_support;
+                backend_timing.kf_floor_s = ks.kf_floor_s;
+                backend_timing.vision_sigma_px = optimize_ptr_->lastVisionSigmaPx();
+                backend_timing.vision_noise_px = optimize_ptr_->lastVisionNoisePx();
+            }
+
+            // 更新标志位
+            is_optimized_ = true;
+
+            // 进行边缘化
+            const auto marginalize_begin = MonotonicRawClock::now();
+            state_mutex_.lock();
+            optimize_ptr_->marginalize(timestamp_list_, state_data_list_, preintegration_list_,
+                                       odom_preintegration_list_, static_state_list_);
+            state_mutex_.unlock();
+            backend_timing.marginalize_ms = std::chrono::duration<double, std::milli>(
+                MonotonicRawClock::now() - marginalize_begin).count();
+
+            // Publish only IDs retained by the completed window update.
+            updateTemporalKeyframeReference(vision_measurement_cur);
+            publishKeyframeLoop(vision_measurement_cur, &backend_timing);
+            fillBackendMetrics(vision_measurement_cur, backend_timing);
+            backend_timing.estimated_odom_publish_ms = publishEstimatedOdom();
+            backend_timing.total_ms = std::chrono::duration<double, std::milli>(
+                                          MonotonicRawClock::now() - backend_process_begin)
+                                          .count();
+            PipelineTiming::recordBackend(backend_timing);
         }
     }
     

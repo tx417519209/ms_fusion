@@ -348,12 +348,10 @@ private:
     std::atomic<size_t> vision_measurement_dropped_for_realtime_count_{0};
 
     // 机械编排线程的对应的线程锁
-    std::mutex ins_thread_mutex_;
     std::condition_variable ins_thread_sem_;
     std::thread ins_thread_;
 
     // 融合线程的对应的线程锁
-    std::mutex fusion_thread_mutex_;
     std::condition_variable fusion_thread_sem_;
     std::thread fusion_thread_;
 
