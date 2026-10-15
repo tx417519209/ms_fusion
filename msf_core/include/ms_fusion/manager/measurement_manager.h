@@ -106,17 +106,14 @@ private:
     std::atomic<std::uint64_t> producer_dropped_count_{0};
 
     // IMU线程（线程锁，线程对象，条件变量）
-    std::mutex imu_thread_mutex_;
     std::thread imu_thread_;
     std::condition_variable imu_thread_condition_;
 
     // 里程计线程
-    std::mutex odom_thread_mutex_;
     std::thread odom_thread_;
     std::condition_variable odom_thread_condition_;
 
     // 视觉线程（线程锁，线程对象，条件变量）
-    std::mutex vision_thread_mutex_;
     std::thread vision_thread_;
     std::condition_variable vision_thread_condition_;
 

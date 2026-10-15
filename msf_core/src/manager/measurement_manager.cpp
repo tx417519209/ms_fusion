@@ -284,12 +284,12 @@ void MeasurementManager::constructPtrs(const MsFusionConfigParams& config_params
 
 void MeasurementManager::stop() {
     is_finished_ = true;
-    // 唤醒方式同 MsFusionManager::stop()：先置位、再拿一次锁、再 notify，不会错过唤醒
-    { Lock lock(imu_thread_mutex_); }
+    // 先置位、再拿一次各自的 queue mutex、再 notify：消费线程在该锁下检查谓词并 wait，不会错过唤醒
+    { Lock lock(imu_message_queue_mutex_); }
     imu_thread_condition_.notify_all();
-    { Lock lock(odom_thread_mutex_); }
+    { Lock lock(odom_message_queue_mutex_); }
     odom_thread_condition_.notify_all();
-    { Lock lock(vision_thread_mutex_); }
+    { Lock lock(image_message_queue_mutex_); }
     vision_thread_condition_.notify_all();
     if (imu_thread_.joinable()) {
         imu_thread_.join();
@@ -407,109 +407,105 @@ void MeasurementManager::runImuThread() {
     ImuMeasurement imu_measurement_cur, imu_measurement_pre;
 
     // 系统不退出，循环处理图片
-    while (!is_finished_) {
-        // 等待IMU测量数据队列中有数据
-        Lock thread_lock(imu_thread_mutex_);
-        if (is_finished_) {
-            break;
+    while (true) {
+        // 等待并取一条IMU数据（等待、判空、取数都在 queue mutex 下完成）
+        {
+            Lock lock(imu_message_queue_mutex_);
+            imu_thread_condition_.wait(lock, [this] {
+                return is_finished_ || !imu_message_queue_.empty();
+            });
+            if (is_finished_) {
+                break;
+            }
+            imu_message_cur = imu_message_queue_.front();
+            imu_message_queue_.pop();
         }
-        imu_thread_condition_.wait(thread_lock);
 
-        // IMUbuffer不为空，循环处理数据
-        while (!imu_message_queue_.empty()) {
-            // 拿IMU测量数据
-            {
-                Lock lock(imu_message_queue_mutex_);
-                imu_message_cur = imu_message_queue_.front();
-                imu_message_queue_.pop();
-            }
+        // 拿到当前IMU的时间戳
+        const double& current_timestamp = imu_message_cur.timestamp;
 
-            // 拿到当前IMU的时间戳
-            const double& current_timestamp = imu_message_cur.timestamp;
-
-            // 如果两帧IMU的时间靠的太近，则跳过
-            if (current_timestamp - imu_measurement_cur.timestamp < 0.001) {
-                MSF_VLOG << "Warning: two IMU data are too close, discard current frame" << std::endl;
-                continue;
-            }
-
-            // 赋值上一帧IMU数据
-            imu_measurement_pre = imu_measurement_cur;
-
-            // 赋值当前IMU数据
-            imu_measurement_cur.timestamp = current_timestamp;
-
-            // 求两帧之间的IMU数据时间差
-            imu_measurement_cur.dt = imu_measurement_cur.timestamp - imu_measurement_pre.timestamp;
-
-            // 赋值当前IMU数据的加表观测和陀螺仪观测
-            Eigen::Vector3d am, wm;
-            if (imu_use_median_) {
-                am = (imu_message_pre.am + imu_message_cur.am) / 2.0;
-                wm = (imu_message_pre.wm + imu_message_cur.wm) / 2.0;
-            } else {
-                am = imu_message_cur.am;
-                wm = imu_message_cur.wm;
-            } 
-
-            // 把IMU的观测值从真实坐标系转换到虚拟坐标系
-            imu_measurement_cur.am = T_virtual_imu_from_real_imu.R * am;
-            imu_measurement_cur.wm = T_virtual_imu_from_real_imu.R * wm;
-            MSF_VLOG << std::fixed << std::setprecision(6)
-                     << "[IMU] t=" << current_timestamp
-                     << " am_real=" << am.transpose()
-                     << " wm_real=" << wm.transpose()
-                     << " am_virtual=" << imu_measurement_cur.am.transpose()
-                     << " wm_virtual=" << imu_measurement_cur.wm.transpose()
-                     << std::endl;
-
-            // 求角度增量和速度增量
-            imu_measurement_cur.dvel = imu_measurement_cur.am * imu_measurement_cur.dt;
-            imu_measurement_cur.dtheta = imu_measurement_cur.wm * imu_measurement_cur.dt;
-
-            // 如果是第一帧数据不要
-            if (imu_measurement_pre.timestamp == 0.0) {
-                MSF_VLOG << "Info: first IMU data, discard" << std::endl;
-                continue;
-            }
-
-            // 维护帧间旋转先验的陀螺积分历史，累积约定同 preintegration_base.cpp
-            {
-                std::lock_guard<std::mutex> lock(gyro_rotation_mutex_);
-                const Eigen::Quaterniond q_prev = gyro_rotation_history_.empty()
-                                                      ? Eigen::Quaterniond::Identity()
-                                                      : gyro_rotation_history_.back().second;
-                const Eigen::Quaterniond q_cur =
-                    (q_prev * Rotation::rotvec2quaternion(imu_measurement_cur.dtheta)).normalized();
-                gyro_rotation_history_.emplace_back(imu_measurement_cur.timestamp, q_cur);
-                constexpr double kGyroRotationHistorySeconds = 2.0;
-                while (gyro_rotation_history_.size() > 1 &&
-                       imu_measurement_cur.timestamp - gyro_rotation_history_.front().first >
-                           kGyroRotationHistorySeconds) {
-                    gyro_rotation_history_.pop_front();
-                }
-            }
-
-            // 如果两帧IMU的时间差大于名义间隔的 1.5 倍（断档），则需要插值
-            updateNominalImuDt(imu_measurement_cur.dt);
-            if (imu_data_dt_ > 0.0 && imu_measurement_cur.dt > 1.5 * imu_data_dt_) {
-                Eigen::aligned_vector<ImuMeasurement> imu_measurement_interpolated;
-
-                // IMU进行插值
-                imuInterpolation(imu_measurement_pre, imu_measurement_cur, 
-                                 imu_measurement_interpolated);
-
-                // 每一帧数据发送到管理类
-                for (size_t i = 0; i < imu_measurement_interpolated.size(); i++) {
-                    MsFusionManager::SnglPtr()->pushImuMeasurement(imu_measurement_interpolated.at(i));
-                }
-            } else {
-                MsFusionManager::SnglPtr()->pushImuMeasurement(imu_measurement_cur);
-            }
-
-            // 当前的IMU消息赋值成上一帧的IMU消息
-            imu_message_pre = imu_message_cur;
+        // 如果两帧IMU的时间靠的太近，则跳过
+        if (current_timestamp - imu_measurement_cur.timestamp < 0.001) {
+            MSF_VLOG << "Warning: two IMU data are too close, discard current frame" << std::endl;
+            continue;
         }
+
+        // 赋值上一帧IMU数据
+        imu_measurement_pre = imu_measurement_cur;
+
+        // 赋值当前IMU数据
+        imu_measurement_cur.timestamp = current_timestamp;
+
+        // 求两帧之间的IMU数据时间差
+        imu_measurement_cur.dt = imu_measurement_cur.timestamp - imu_measurement_pre.timestamp;
+
+        // 赋值当前IMU数据的加表观测和陀螺仪观测
+        Eigen::Vector3d am, wm;
+        if (imu_use_median_) {
+            am = (imu_message_pre.am + imu_message_cur.am) / 2.0;
+            wm = (imu_message_pre.wm + imu_message_cur.wm) / 2.0;
+        } else {
+            am = imu_message_cur.am;
+            wm = imu_message_cur.wm;
+        } 
+
+        // 把IMU的观测值从真实坐标系转换到虚拟坐标系
+        imu_measurement_cur.am = T_virtual_imu_from_real_imu.R * am;
+        imu_measurement_cur.wm = T_virtual_imu_from_real_imu.R * wm;
+        MSF_VLOG << std::fixed << std::setprecision(6)
+                 << "[IMU] t=" << current_timestamp
+                 << " am_real=" << am.transpose()
+                 << " wm_real=" << wm.transpose()
+                 << " am_virtual=" << imu_measurement_cur.am.transpose()
+                 << " wm_virtual=" << imu_measurement_cur.wm.transpose()
+                 << std::endl;
+
+        // 求角度增量和速度增量
+        imu_measurement_cur.dvel = imu_measurement_cur.am * imu_measurement_cur.dt;
+        imu_measurement_cur.dtheta = imu_measurement_cur.wm * imu_measurement_cur.dt;
+
+        // 如果是第一帧数据不要
+        if (imu_measurement_pre.timestamp == 0.0) {
+            MSF_VLOG << "Info: first IMU data, discard" << std::endl;
+            continue;
+        }
+
+        // 维护帧间旋转先验的陀螺积分历史，累积约定同 preintegration_base.cpp
+        {
+            std::lock_guard<std::mutex> lock(gyro_rotation_mutex_);
+            const Eigen::Quaterniond q_prev = gyro_rotation_history_.empty()
+                                                  ? Eigen::Quaterniond::Identity()
+                                                  : gyro_rotation_history_.back().second;
+            const Eigen::Quaterniond q_cur =
+                (q_prev * Rotation::rotvec2quaternion(imu_measurement_cur.dtheta)).normalized();
+            gyro_rotation_history_.emplace_back(imu_measurement_cur.timestamp, q_cur);
+            constexpr double kGyroRotationHistorySeconds = 2.0;
+            while (gyro_rotation_history_.size() > 1 &&
+                   imu_measurement_cur.timestamp - gyro_rotation_history_.front().first >
+                       kGyroRotationHistorySeconds) {
+                gyro_rotation_history_.pop_front();
+            }
+        }
+
+        // 如果两帧IMU的时间差大于名义间隔的 1.5 倍（断档），则需要插值
+        updateNominalImuDt(imu_measurement_cur.dt);
+        if (imu_data_dt_ > 0.0 && imu_measurement_cur.dt > 1.5 * imu_data_dt_) {
+            Eigen::aligned_vector<ImuMeasurement> imu_measurement_interpolated;
+
+            // IMU进行插值
+            imuInterpolation(imu_measurement_pre, imu_measurement_cur, 
+                             imu_measurement_interpolated);
+
+            // 每一帧数据发送到管理类
+            for (size_t i = 0; i < imu_measurement_interpolated.size(); i++) {
+                MsFusionManager::SnglPtr()->pushImuMeasurement(imu_measurement_interpolated.at(i));
+            }
+        } else {
+            MsFusionManager::SnglPtr()->pushImuMeasurement(imu_measurement_cur);
+        }
+
+        // 当前的IMU消息赋值成上一帧的IMU消息
+        imu_message_pre = imu_message_cur;
     }
 }
 
@@ -554,57 +550,55 @@ void MeasurementManager::runOdomThread() {
     OdomMessage odom_message_pre = OdomMessage(), odom_message_cur = OdomMessage();
     OdomMeasurement odom_measurement = OdomMeasurement();
 
-    while (!is_finished_) {
-        // 等待视觉测量数据队列中有数据
-        Lock thread_lock(odom_thread_mutex_);
-        if (is_finished_) {
-            break;
+    while (true) {
+        // 等待并取一条里程计数据（等待、判空、取数都在 queue mutex 下完成）
+        {
+            Lock lock(odom_message_queue_mutex_);
+            odom_thread_condition_.wait(lock, [this] {
+                return is_finished_ || !odom_message_queue_.empty();
+            });
+            if (is_finished_) {
+                break;
+            }
+            odom_message_cur = odom_message_queue_.front();
+            odom_message_queue_.pop();
         }
-        odom_thread_condition_.wait(thread_lock);
 
-        while (!odom_message_queue_.empty()) {
-            {
-                Lock lock(odom_message_queue_mutex_);
-                odom_message_cur = odom_message_queue_.front();
-                odom_message_queue_.pop();
-            }
+        const double& current_timestamp = odom_message_cur.timestamp;
 
-            const double& current_timestamp = odom_message_cur.timestamp;
+        if (current_timestamp - odom_message_pre.timestamp < 0.001) {
+            continue;
+        }
 
-            if (current_timestamp - odom_message_pre.timestamp < 0.001) {
-                continue;
-            }
+        // 赋值里程计观测值的时间戳
+        odom_measurement.timestamp = current_timestamp;
 
-            // 赋值里程计观测值的时间戳
-            odom_measurement.timestamp = current_timestamp;
-
+        // 赋值角速度和线速度
+        if (1) {
             // 赋值角速度和线速度
-            if (1) {
-                // 赋值角速度和线速度
-                odom_measurement.vm = (odom_message_pre.vm + odom_message_cur.vm) * 0.5;
-                odom_measurement.wm = (odom_message_pre.wm + odom_message_cur.wm) * 0.5;
-            } else {
-                odom_measurement.vm = odom_message_cur.vm;
-                odom_measurement.wm = odom_message_cur.wm;
-            }
-
-            // 赋值旋转和
-            odom_measurement.orientation = odom_message_cur.orientation;
-            odom_measurement.position = odom_message_cur.position;
-
-            // 如果是第一帧里程计数据，丢弃
-            if (odom_message_pre.timestamp == 0) {
-                MSF_VLOG << "Info: first odom data, discard" << std::endl;
-                odom_message_pre = odom_message_cur;
-                continue;
-            }
-
-            // 把数据发送到融合管理类
-            MsFusionManager::SnglPtr()->pushOdomMeasurement(odom_measurement);
-
-            // 赋值上一帧数据
-            odom_message_pre = odom_message_cur;
+            odom_measurement.vm = (odom_message_pre.vm + odom_message_cur.vm) * 0.5;
+            odom_measurement.wm = (odom_message_pre.wm + odom_message_cur.wm) * 0.5;
+        } else {
+            odom_measurement.vm = odom_message_cur.vm;
+            odom_measurement.wm = odom_message_cur.wm;
         }
+
+        // 赋值旋转和
+        odom_measurement.orientation = odom_message_cur.orientation;
+        odom_measurement.position = odom_message_cur.position;
+
+        // 如果是第一帧里程计数据，丢弃
+        if (odom_message_pre.timestamp == 0) {
+            MSF_VLOG << "Info: first odom data, discard" << std::endl;
+            odom_message_pre = odom_message_cur;
+            continue;
+        }
+
+        // 把数据发送到融合管理类
+        MsFusionManager::SnglPtr()->pushOdomMeasurement(odom_measurement);
+
+        // 赋值上一帧数据
+        odom_message_pre = odom_message_cur;
     }
 }
 
@@ -613,44 +607,40 @@ void MeasurementManager::runVisionThread() {
     // 定义容器，保存前后两帧的视觉数据
     ImageMessage image_message_cur;
     
-    while (!is_finished_) {
-        // 等待视觉测量数据队列中有数据
-        Lock thread_lock(vision_thread_mutex_);
-        if (is_finished_) {
-            break;
-        }
-        vision_thread_condition_.wait(thread_lock);
-
-        // 视觉buffer不为空，循环处理数据
-        while (!image_message_queue_.empty()) {
-            // 拿视觉测量数据
-            size_t dropped_for_realtime = 0;
-            size_t queue_size_after = 0;
-            {
-                Lock lock(image_message_queue_mutex_);
-
-                // 判断是否要实时处理图片数据
-                if (vision_realtime_force_) {
-                    // 实时处理图片：只保留最新一帧
-                    while (!image_message_queue_.empty()) {
-                        image_message_cur = image_message_queue_.front();
-                        image_message_queue_.pop();
-                        ++dropped_for_realtime;
-                    }
-                    if (dropped_for_realtime > 0) {
-                        --dropped_for_realtime;  // last one is processed, not dropped
-                    }
-                } else {
-                    // 不是实时处理图片
-                    image_message_cur = image_message_queue_.front();
-                    image_message_queue_.pop();
-                }
-                queue_size_after = image_message_queue_.size();
+    while (true) {
+        // 拿视觉测量数据（等待、判空、取数都在 queue mutex 下完成）
+        size_t dropped_for_realtime = 0;
+        size_t queue_size_after = 0;
+        {
+            Lock lock(image_message_queue_mutex_);
+            vision_thread_condition_.wait(lock, [this] {
+                return is_finished_ || !image_message_queue_.empty();
+            });
+            if (is_finished_) {
+                break;
             }
 
-            // 拿到了图片数据，进行处理
-            processImageMessage(image_message_cur, queue_size_after, dropped_for_realtime);
+            // 判断是否要实时处理图片数据
+            if (vision_realtime_force_) {
+                // 实时处理图片：只保留最新一帧
+                while (!image_message_queue_.empty()) {
+                    image_message_cur = image_message_queue_.front();
+                    image_message_queue_.pop();
+                    ++dropped_for_realtime;
+                }
+                if (dropped_for_realtime > 0) {
+                    --dropped_for_realtime;  // last one is processed, not dropped
+                }
+            } else {
+                // 不是实时处理图片
+                image_message_cur = image_message_queue_.front();
+                image_message_queue_.pop();
+            }
+            queue_size_after = image_message_queue_.size();
         }
+
+        // 拿到了图片数据，进行处理
+        processImageMessage(image_message_cur, queue_size_after, dropped_for_realtime);
     }
 }
 
