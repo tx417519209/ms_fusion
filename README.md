@@ -205,6 +205,14 @@ python3 scripts/tumvie_eval_trajectory.py eval \
 注意：ms_fusion 内部窗口与超时按墙钟时间运行，回放必须按真实时基进行（不要加速）；
 ATE 只衡量轨迹精度，不代表板端实时性，实时性需另看日志中的 tracking / 队列耗时。
 
+### TUM VI 全序列评测结果
+
+28 条序列 × 3 次的完整结果（ATE 三种对齐口径、RPE、初始化失败、前端 Hz、后端 P95、轨迹图，
+含失败序列与调参对比）见 [`benchmarks/tumvi/README.md`](benchmarks/tumvi/README.md)。
+摘要：室内动捕房间（room1–6）全局对齐 ATE 0.05–0.20 m；走廊/slides/magistrale 约 0.3–10 m；
+室外无回环漂移明显（未发散的 6 条中位数 52.9 m，范围 20–188 m），outdoors3、outdoors5 重复发散（84 次中 78 次通过预设发散筛查）。
+所有序列同一配置、回环关闭、未逐序列调参。
+
 ### 2. 单元测试与 lint
 
 ```bash
