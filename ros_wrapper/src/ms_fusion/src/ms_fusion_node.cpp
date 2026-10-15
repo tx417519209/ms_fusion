@@ -775,7 +775,7 @@ nav_msgs::msg::Odometry MsFusionNode::odomInfoToRosMsg(const OdomInfo& odom_info
 
     odom_msg.pose.covariance[0] = odom_info.p_cov[0];
     odom_msg.pose.covariance[7] = odom_info.p_cov[1];
-    odom_msg.pose.covariance[15] = odom_info.p_cov[2];
+    odom_msg.pose.covariance[14] = odom_info.p_cov[2];
     odom_msg.pose.covariance[21] = odom_info.q_cov[0];
     odom_msg.pose.covariance[28] = odom_info.q_cov[1];
     odom_msg.pose.covariance[35] = odom_info.q_cov[2];
