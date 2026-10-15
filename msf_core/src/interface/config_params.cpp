@@ -1166,6 +1166,13 @@ void OptimizerConfigParams::loadConfigFromYAML(const YAML::Node& optimizer_node)
                 optimizer_node["outlier_reprojection_sigma"].as<double>();
         }
 
+        if (optimizer_node["stereo_anchor_std_scale"]) {
+            stereo_anchor_std_scale = optimizer_node["stereo_anchor_std_scale"].as<double>();
+        }
+        if (!std::isfinite(stereo_anchor_std_scale) || stereo_anchor_std_scale <= 0.0) {
+            throw std::runtime_error("stereo_anchor_std_scale must be finite and positive");
+        }
+
         if (optimizer_node["triangulation_max_reprojection_px"]) {
             triangulation_max_reprojection_px = optimizer_node["triangulation_max_reprojection_px"].as<double>();
         }
@@ -1268,6 +1275,7 @@ void OptimizerConfigParams::printConfig() const {
     MSF_ILOG << "optimize_reprojection_std: " << optimize_reprojection_std << std::endl;
     MSF_ILOG << "outlier_reprojection_sigma: " << outlier_reprojection_sigma << " (x std)"
              << std::endl;
+    MSF_ILOG << "stereo_anchor_std_scale: " << stereo_anchor_std_scale << std::endl;
     MSF_ILOG << "keyframe_min_interval_s: " << keyframe_min_interval_s << " (s)" << std::endl;
     MSF_ILOG << "keyframe_min_parallax_px: " << keyframe_min_parallax_px << " (px)" << std::endl;
     MSF_ILOG << "keyframe_min_parallax_track_num: " << keyframe_min_parallax_track_num

@@ -410,6 +410,11 @@ struct OptimizerConfigParams {
     // 反而涨到 3.2σ / 6.6σ。改成可配置，默认 3.0。
     double outlier_reprojection_sigma = 3.0;
 
+    // 双目锚点因子（StereoAnchorFactor）的 σ 缩放，作用在 optimize_reprojection_std 上：
+    // <1 提高锚点权重（σ 越小越强），1.0 即原行为。用于验证剧烈转动后尺度被 IMU 带偏时
+    // 锚点是否压得住；不影响时序视觉因子。
+    double stereo_anchor_std_scale = 1.0;
+
     // 相邻关键帧最小时间间隔（秒），用于后端滑窗关键帧选取
     double keyframe_min_interval_s = 0.099;
 

@@ -396,7 +396,7 @@ void Optimizer::initMarginalize(std::deque<double>& timestamp_list,
 
         if (auto anchor_factor = makeStereoAnchorFactor(
                 mappoint, *feature_manager_ptr_, *inv_depth,
-                optimize_reprojection_error_std_)) {
+                optimize_reprojection_error_std_ * optimizer_config_params_.stereo_anchor_std_scale)) {
             // Eliminate the same scalar depth as the temporal factors, so its
             // stereo information reaches the retained poses through Schur.
             auto anchor_residual = std::make_shared<ResidualBlockInfo>(
@@ -842,7 +842,7 @@ void Optimizer::marginalize(std::deque<double>& timestamp_list,
 
         if (auto anchor_factor = makeStereoAnchorFactor(
                 mappoint, *feature_manager_ptr_, *inv_depth,
-                optimize_reprojection_error_std_)) {
+                optimize_reprojection_error_std_ * optimizer_config_params_.stereo_anchor_std_scale)) {
             auto anchor_residual = std::make_shared<ResidualBlockInfo>(
                 std::shared_ptr<ceres::CostFunction>(std::move(anchor_factor)), anchor_loss_function,
                 std::vector<double*>{inv_depth}, std::vector<int>{0});
@@ -1404,7 +1404,7 @@ void Optimizer::addVisionFactors(ceres::Problem& problem, const std::deque<doubl
 
         if (auto anchor_factor = makeStereoAnchorFactor(
                 mappoint, *feature_manager_ptr_, *inv_depth,
-                optimize_reprojection_error_std_)) {
+                optimize_reprojection_error_std_ * optimizer_config_params_.stereo_anchor_std_scale)) {
             if (anchor_loss_function == nullptr) {
                 anchor_loss_function = new ceres::HuberLoss(kStereoAnchorHuberDelta);
             }
