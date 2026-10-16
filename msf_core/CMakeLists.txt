@@ -183,6 +183,13 @@ if(BUILD_TESTING)
       src/common/rotation.cpp)
     target_link_libraries(test_preintegration Sophus::Sophus ${OpenCV_LIBS} yaml-cpp)
 
+    # 预积分旋转残差 / 雅可比的四元数符号分支
+    msf_add_unit_test(test_preintegration_rot_sign
+      src/preintegration/preintegration_base.cpp
+      src/preintegration/preintegration_normal.cpp
+      src/common/rotation.cpp)
+    target_link_libraries(test_preintegration_rot_sign Sophus::Sophus ${OpenCV_LIBS} yaml-cpp)
+
     msf_add_unit_test(test_pose_manifold
       src/factors/pose_mainfold.cpp
       src/common/rotation.cpp)

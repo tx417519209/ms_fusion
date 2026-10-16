@@ -74,6 +74,10 @@ public:
 private:
     static constexpr int NUM_STATE = 15;
     static constexpr int NUM_NOISE = 12;
+
+    // evaluate() 求出的符号：旋转残差(矩阵恢复的四元数) = rot_sign_ * 状态四元数乘积误差。
+    // 解析雅可比的旋转行按乘积形式推导，需乘 rot_sign_（±1）才与残差一致
+    double rot_sign_ = 1.0;
 };
 
 

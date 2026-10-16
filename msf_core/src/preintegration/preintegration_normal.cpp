@@ -52,9 +52,15 @@ Eigen::MatrixXd PreintegrationNormal::evaluate(const IntegrationState& state0,
     // compute rotation product for attitude residual
     Eigen::Matrix3d M_rot = corrected_q_.inverse().toRotationMatrix() * R0_inv * 
                             state1.q.toRotationMatrix();
-    residual.block<3, 1>(6, 0) = 2 * (Rotation::matrix2quaternion(M_rot)).vec();
+    const auto q_rot_residual = Rotation::matrix2quaternion(M_rot);
+    residual.block<3, 1>(6, 0) = 2 * q_rot_residual.vec();
     residual.block<3, 1>(9, 0) = state1.bg - state0.bg;
     residual.block<3, 1>(12, 0) = state1.ba - state0.ba;
+
+    // 解析雅可比按状态四元数乘积 Q = corrected_q^-1 * q0^-1 * q1 推导；残差取的是矩阵恢复的四元数，
+    // 二者可能互为相反数（同一姿态）。此时残差不变而旋转雅可比反号，所以记下符号供三个雅可比使用
+    const Eigen::Quaterniond q_prod = corrected_q_.inverse() * state0.q.inverse() * state1.q;
+    rot_sign_ = q_prod.coeffs().dot(q_rot_residual.coeffs()) < 0.0 ? -1.0 : 1.0;
 
     residual = sqrt_information_ * residual;
     return residual;
@@ -74,6 +80,7 @@ Eigen::MatrixXd PreintegrationNormal::residualJacobianPose0(const IntegrationSta
                              state1.v - state0.v - gravity_ * delta_time_));
     jaco.block(6, 3, 3, 3) = -(Rotation::quaternionleft(state1.q.inverse() * state0.q) * 
                                Rotation::quaternionright(corrected_q_)).bottomRightCorner<3, 3>();
+    jaco.block(6, 3, 3, 3) *= rot_sign_;
 
     jaco = sqrt_information_ * jaco;
     return jaco;
@@ -89,6 +96,7 @@ Eigen::MatrixXd PreintegrationNormal::residualJacobianPose1(const IntegrationSta
     jaco.block(6, 3, 3, 3) =
         Rotation::quaternionleft(corrected_q_.inverse() * state0.q.inverse() * state1.q)
             .bottomRightCorner<3, 3>();
+    jaco.block(6, 3, 3, 3) *= rot_sign_;
 
     jaco = sqrt_information_ * jaco;
     return jaco;
@@ -124,6 +132,7 @@ Eigen::MatrixXd PreintegrationNormal::residualJacobianMix0(const IntegrationStat
              .bottomRightCorner<3, 3>()
         * Rotation::inverseRightJacobianSO3(u).inverse()
         * dq_dbg;
+    jaco.block(6, 3, 3, 3) *= rot_sign_;
     jaco.block(9, 3, 3, 3) = -Eigen::Matrix3d::Identity();
     jaco.block(12, 6, 3, 3) = -Eigen::Matrix3d::Identity();
 
