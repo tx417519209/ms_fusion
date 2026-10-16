@@ -8,6 +8,11 @@
 
 #include <ceres/ceres.h>
 #include <array>
+#include <deque>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
 
 namespace ms_fusion {
 
@@ -192,6 +197,55 @@ private:
     // 计算 lastStereoScaleRatio()，须在求解后、consistencyCheck() 改状态之前调用
     void updateStereoScaleRatio();
 
+    // 逐关键帧诊断（optimizer.keyframe_diag）：只读，不改变估计结果
+    struct DiagFactorStats {
+        int attempted = 0;   // 参与统计的残差块数
+        int evaluated = 0;   // 成功求值且有限的块数
+        int failed = 0;      // Evaluate() 返回 false 或无代价函数
+        int nonfinite = 0;   // 求值成功但含 NaN/Inf
+        double rms = 0.0;    // 白化残差 RMS（逐维），仅 evaluated>0 时有意义
+        double max = 0.0;    // 单个残差块白化残差的最大模
+    };
+    // Huber 线性区与影响系数 rho'（s=|r|²，rho'=1 当 s<=δ²，否则 δ/√s）；rho' 是对梯度的缩放，
+    // 不是信息量
+    struct DiagRobustStats {
+        int attempted = 0, evaluated = 0, failed = 0, nonfinite = 0;
+        int quadratic = 0;   // s<=δ² 的块数（二次区）
+        double rho_min = 1.0, rho_p10 = 1.0, rho_med = 1.0, rho_mean = 1.0;
+    };
+    // addVisionFactors() 的准入计数（每次重建）
+    struct VisionAdmission {
+        int landmarks = 0;
+        int skip_invalid = 0, skip_not_triangulated = 0, skip_few_obs = 0, skip_no_inv_depth = 0;
+        int skip_ref_normal = 0, skip_ref_index = 0;
+        int anchors = 0;
+        int obs_candidates = 0;  // 非参考帧的观测数
+        int skip_outlier = 0, skip_obs_index = 0, skip_obs_normal = 0, skip_depth = 0;
+        int added_mono = 0, added_stereo = 0;
+        // 降级为单目的原因：右目从未由前端提供 / 后端三角化质量不达标清除 / 后端深度初始化失败清除 /
+        // 右目已被标为重投影外点 / 当前几何校验失败
+        int right_never = 0, right_cleared_quality = 0, right_cleared_depth = 0;
+        int right_outlier = 0, right_geom_fail = 0;
+        // 未三角化路标（被跳过的 not_tri）按其最新一帧观测的右目状态分类
+        int nt_right_never = 0, nt_right_cleared_quality = 0, nt_right_cleared_depth = 0;
+        int nt_has_right = 0;  // 有可用右目但尚未被三角化（外点/左目无效/尚未处理）
+    };
+    static constexpr double kVisionHuberDelta = 0.5;
+    bool diagActive(double t) const {
+        const auto& c = optimizer_config_params_;
+        return c.keyframe_diag && (c.keyframe_diag_start_s <= 0.0 || t >= c.keyframe_diag_start_s) &&
+               (c.keyframe_diag_end_s <= 0.0 || t <= c.keyframe_diag_end_s);
+    }
+    DiagFactorStats diagFactorStats(const ceres::Problem& problem, const std::string& key) const;
+    DiagRobustStats diagVisionRobust(const ceres::Problem& problem) const;
+    // 求解后、consistencyCheck() 之前调用（problem 的参数块指向 state_data_list，之后会被改写）
+    std::string keyframeDiagBody(const ceres::Problem& problem, const ceres::Solver::Summary& summary,
+                                 const std::deque<double>& timestamp_list,
+                                 const std::vector<IntegrationStateData>& pre_states,
+                                 const std::vector<IntegrationStateData>& post_states,
+                                 const std::deque<std::shared_ptr<PreintegrationBase>>& preintegration_list,
+                                 const std::map<std::string, DiagFactorStats>& pre_stats) const;
+
 private:
     // 静态常量
     static constexpr size_t MIN_OBS_NUM = 2;
@@ -256,6 +310,8 @@ private:
     double vision_sigma_ema_px_ = -1.0;
     double current_vision_scale_ = kVisionScale;
     double last_vision_noise_px_ = -1.0;
+    VisionAdmission last_vision_admission_;
+    double last_diag_ms_ = 0.0;
     double last_stereo_scale_ratio_ = -1.0;
     int last_stereo_scale_samples_ = 0;
     double last_optimize_build_ms_{-1.0};

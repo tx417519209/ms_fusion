@@ -24,7 +24,8 @@ public:
                                  IntegrationState& state);
 
     // 优化以后进行多次机械编排
-    static void redoInsMechanization(const IntegrationConfiguration& config, 
+    // 返回 false 表示在窗口里找不到关键帧时间对应的 IMU 历元（提前返回，窗口状态未更新）
+    static bool redoInsMechanization(const IntegrationConfiguration& config, 
                                      const IntegrationState& updated_state,
                                      size_t reserved_ins_num,
                                      Eigen::aligned_deque<std::pair<ImuMeasurement, IntegrationState>>& ins_windows);

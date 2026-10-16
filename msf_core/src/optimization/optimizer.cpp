@@ -32,6 +32,31 @@ namespace {
 // quadratic up to 4 px. Temporal factors retain their separate Huber(0.5).
 constexpr double kStereoAnchorHuberDelta = 2.0;
 
+// 逐关键帧诊断用的小工具（只读）
+double diagRotAngleDeg(const IntegrationStateData& a, const IntegrationStateData& b) {
+    const Eigen::Quaterniond qa(a.pose[6], a.pose[3], a.pose[4], a.pose[5]);
+    const Eigen::Quaterniond qb(b.pose[6], b.pose[3], b.pose[4], b.pose[5]);
+    const Eigen::Quaterniond dq = qa.inverse() * qb;
+    return 2.0 * std::atan2(dq.vec().norm(), std::abs(dq.w())) * 180.0 / M_PI;
+}
+
+std::string diagStateStr(const IntegrationStateData& s) {
+    std::ostringstream os;
+    os << std::fixed << std::setprecision(4) << "p=[" << s.pose[0] << "," << s.pose[1] << ","
+       << s.pose[2] << "] q(w,x,y,z)=[" << std::setprecision(6) << s.pose[6] << "," << s.pose[3]
+       << "," << s.pose[4] << "," << s.pose[5] << "] v=[" << std::setprecision(4) << s.mix[0]
+       << "," << s.mix[1] << "," << s.mix[2] << "]";
+    return os.str();
+}
+
+std::string diagShiftStr(const IntegrationStateData& a, const IntegrationStateData& b) {
+    const auto v3 = [](const double* p) { return Eigen::Vector3d(p[0], p[1], p[2]); };
+    std::ostringstream os;
+    os << std::fixed << std::setprecision(4) << "dR_deg=" << diagRotAngleDeg(a, b)
+       << " dv=" << (v3(b.mix) - v3(a.mix)).norm() << " dp=" << (v3(b.pose) - v3(a.pose)).norm();
+    return os.str();
+}
+
 std::unique_ptr<ceres::CostFunction> makeStereoAnchorFactor(
     const SFMFeat& landmark, const FeatureManager& features,
     double inverse_depth, double normalized_std) {
@@ -599,10 +624,26 @@ void Optimizer::optimize(std::deque<double>& timestamp_list,
     current_vision_scale_ = decideVisionScale();
     addVisionFactors(problem, timestamp_list, state_data_list, current_vision_scale_);
 
+    // 逐关键帧诊断：求解前快照（状态 + 各类因子残差）。耗时单独记，不进入自适应关键帧间隔
+    const bool diag_on = diagActive(timestamp_list.back());
+    double diag_pre_ms = 0.0, diag_post_ms = 0.0;
+    std::vector<IntegrationStateData> diag_pre_states, diag_post_states;
+    std::map<std::string, DiagFactorStats> diag_pre_stats;
+    if (diag_on) {
+        const auto diag_begin = MonotonicRawClock::now();
+        diag_pre_states.assign(state_data_list.begin(), state_data_list.end());
+        for (const char* key : {"IMU_FACTOR", "REPROJECTION_FACTOR", "MAGINAL_FACTOR"}) {
+            diag_pre_stats[key] = diagFactorStats(problem, key);
+        }
+        diag_pre_ms = std::chrono::duration<double, std::milli>(MonotonicRawClock::now() - diag_begin)
+                          .count();
+    }
+
     // 求解问题
     last_optimize_build_ms_ = std::chrono::duration<double, std::milli>(
                                   MonotonicRawClock::now() - build_begin)
-                                  .count();
+                                  .count() -
+                              diag_pre_ms;
     const auto solve_begin = MonotonicRawClock::now();
     solver.Solve(options, &problem, &summary);
     last_optimize_solve_ms_ = std::chrono::duration<double, std::milli>(
@@ -621,11 +662,45 @@ void Optimizer::optimize(std::deque<double>& timestamp_list,
     collectResidualStats(problem);
     updateStereoScaleRatio();
 
+    std::string diag_body;
+    if (diag_on) {
+        const auto diag_begin = MonotonicRawClock::now();
+        diag_post_states.assign(state_data_list.begin(), state_data_list.end());
+        diag_body = keyframeDiagBody(problem, summary, timestamp_list, diag_pre_states,
+                                     diag_post_states, preintegration_list, diag_pre_stats);
+        diag_post_ms += std::chrono::duration<double, std::milli>(MonotonicRawClock::now() - diag_begin)
+                            .count();
+    }
+
     // 打印优化信息
     MSF_VLOG << "Optimiztion: " << summary.BriefReport() << std::endl;
 
     // 进行一致性校准
     consistencyCheck(origin_state, state_data_list);
+
+    // 逐关键帧诊断：最新关键帧在 求解前 / 求解后 / 一致性变换后 的 p,q,v 与各段变化。
+    // 三段变化的含义：solve_shift = pre→post_solve（含求解器的 4DoF 坐标自由度）；
+    // consist_gauge_shift = post_solve→post_consist，只是 consistencyCheck 把坐标系对齐回优化前
+    // 第一帧（yaw+平移），是坐标变换而不是修正；final_shift = pre→post_consist，才是同一坐标
+    // 约定下该关键帧被优化改变的量。同一 t_kf 可关联 [kf-diag-redo]
+    if (diag_on) {
+        const auto diag_begin = MonotonicRawClock::now();
+        const auto& pre_s = diag_pre_states.back();
+        const auto& post_s = diag_post_states.back();
+        const auto& cons_s = state_data_list.back();
+        std::ostringstream line;
+        line << std::fixed << "[kf-diag] t_kf=" << std::setprecision(6) << timestamp_list.back()
+             << " n_states=" << state_data_list.size() << " | pre_solve " << diagStateStr(pre_s)
+             << " | post_solve " << diagStateStr(post_s) << " | post_consist " << diagStateStr(cons_s)
+             << " | solve_shift " << diagShiftStr(pre_s, post_s) << " consist_gauge_shift "
+             << diagShiftStr(post_s, cons_s) << " final_shift " << diagShiftStr(pre_s, cons_s)
+             << " | " << diag_body;
+        diag_post_ms += std::chrono::duration<double, std::milli>(MonotonicRawClock::now() - diag_begin)
+                            .count();
+        last_diag_ms_ = diag_pre_ms + diag_post_ms;
+        line << " | diag_ms=" << std::setprecision(2) << last_diag_ms_;
+        MSF_ILOG << line.str() << std::endl;
+    }
 
     // 更新优化后的参数
     updateParametersFromOptimizer(timestamp_list, state_data_list);
@@ -647,7 +722,8 @@ void Optimizer::optimize(std::deque<double>& timestamp_list,
     }
     last_optimize_post_ms_ = std::chrono::duration<double, std::milli>(
                                  MonotonicRawClock::now() - post_begin)
-                                 .count();
+                                 .count() -
+                             diag_post_ms;
 
     // optimize() 耗时平滑值，供 updateKeyframeInterval() 算间隔下限
     const double optimize_ms =
@@ -1337,13 +1413,15 @@ void Optimizer::addZeroVelocityFactor(ceres::Problem& problem,
 void Optimizer::addVisionFactors(ceres::Problem& problem, const std::deque<double>& timestamp_list,
                                  std::deque<IntegrationStateData>& state_data_list, double scale) {
     resi_ids_["REPROJECTION_FACTOR"].clear();
+    last_vision_admission_ = VisionAdmission{};
+    auto& adm = last_vision_admission_;
     // 没有特征点，不构造残差
     if (feature_manager_ptr_->landmarks_.empty()) {
         return;
     }
 
     // 构造鲁棒核函数
-    ceres::LossFunction* loss_function = new ceres::HuberLoss(0.5);
+    ceres::LossFunction* loss_function = new ceres::HuberLoss(kVisionHuberDelta);
     // Allocate only when an anchor is added; ceres::Problem owns the shared
     // loss pointer once it is attached to a residual block.
     ceres::LossFunction* anchor_loss_function = nullptr;
@@ -1363,37 +1441,56 @@ void Optimizer::addVisionFactors(ceres::Problem& problem, const std::deque<doubl
     for (const auto& id_landmark : feature_manager_ptr_->landmarks_) {
         // 拿到特征点信息
         const auto& mappoint = id_landmark.second;
+        ++adm.landmarks;
 
         // 不可用的特征点，跳过
         if (!mappoint.is_valid_) {
+            ++adm.skip_invalid;
             continue;
         }
 
         // 没有三角化的特征点，跳过
         if (!mappoint.is_triangulated_) {
+            ++adm.skip_not_triangulated;
+            if (!mappoint.obs_.empty()) {
+                const FeatPerFrame& latest = mappoint.obs_.rbegin()->second;
+                if (latest.has_right_observation_) {
+                    ++adm.nt_has_right;
+                } else if (latest.right_drop_reason_ == 1) {
+                    ++adm.nt_right_cleared_quality;
+                } else if (latest.right_drop_reason_ == 2) {
+                    ++adm.nt_right_cleared_depth;
+                } else {
+                    ++adm.nt_right_never;
+                }
+            }
             continue;
         }
 
         // 没有足够的观测，不构造残差
         if (mappoint.obs_.size() < MIN_OBS_NUM) {
+            ++adm.skip_few_obs;
             continue;
         }
 
         // 观测全被判为粗差的路标不会注册逆深度参数（见 addVisionParameters），
         // 这里跟着跳过；release 下断言是空操作，直接 operator[] 会插入 0 值逆深度
         if (inv_depth_list_.find(id_landmark.first) == inv_depth_list_.end()) {
+            ++adm.skip_no_inv_depth;
             continue;
         }
 
         // 拿到参考帧的归一化坐标并检查有效性
         const auto& pn_ref = mappoint.obs_.at(mappoint.kf_id_).normal_point_;
         if (!pn_ref.allFinite() || pn_ref.z() <= 0.0 || std::abs(pn_ref.z() - 1.0) > 1e-4) {
+            ++adm.skip_ref_normal;
             continue;
         }
 
         // 拿到参考帧对应的索引
         int idx_ref = getStateDataIndex(timestamp_list, mappoint.kf_id_);
         if (idx_ref < 0 || static_cast<size_t>(idx_ref) >= state_data_list.size()) {
+            ++adm.skip_ref_index;
             continue;
         }
         size_t index_ref = static_cast<size_t>(idx_ref);
@@ -1409,6 +1506,7 @@ void Optimizer::addVisionFactors(ceres::Problem& problem, const std::deque<doubl
                 anchor_loss_function = new ceres::HuberLoss(kStereoAnchorHuberDelta);
             }
             problem.AddResidualBlock(anchor_factor.release(), anchor_loss_function, inv_depth);
+            ++adm.anchors;
             // Keep vis_n, temporal noise estimation and KF support about
             // cross-frame constraints; standalone depth factors do not count.
         }
@@ -1419,19 +1517,23 @@ void Optimizer::addVisionFactors(ceres::Problem& problem, const std::deque<doubl
             if (time_pts.first == mappoint.kf_id_) {
                 continue;
             }
+            ++adm.obs_candidates;
 
             // removeOutlierLandmarks 判过的粗差观测不再进优化问题
             if (time_pts.second.is_outlier_) {
+                ++adm.skip_outlier;
                 continue;
             }
 
             // 拿到当前帧的索引号
             int idx_obs = getStateDataIndex(timestamp_list, time_pts.first);
             if (idx_obs < 0 || static_cast<size_t>(idx_obs) >= state_data_list.size()) {
+                ++adm.skip_obs_index;
                 continue;
             }
             size_t index_obs = static_cast<size_t>(idx_obs);
             if (index_obs <= index_ref) {
+                ++adm.skip_obs_index;
                 continue;
             }
 
@@ -1439,6 +1541,7 @@ void Optimizer::addVisionFactors(ceres::Problem& problem, const std::deque<doubl
             const auto& pn_obs_left = time_pts.second.normal_point_;
             if (!pn_obs_left.allFinite() || pn_obs_left.z() <= 0.0 ||
                 std::abs(pn_obs_left.z() - 1.0) > 1e-4) {
+                ++adm.skip_obs_normal;
                 continue;
             }
 
@@ -1451,6 +1554,7 @@ void Optimizer::addVisionFactors(ceres::Problem& problem, const std::deque<doubl
             Eigen::Vector3d p_obs_imu = state_obs.q.toRotationMatrix().transpose() * (p_w - state_obs.p);
             Eigen::Vector3d p_obs_c0 = R_imu_from_cam0.transpose() * (p_obs_imu - t_imu_from_cam0);
             if (!p_obs_c0.allFinite() || p_obs_c0.z() <= 0.1) {
+                ++adm.skip_depth;
                 continue;
             }
 
@@ -1468,6 +1572,20 @@ void Optimizer::addVisionFactors(ceres::Problem& problem, const std::deque<doubl
             }
 
             if (!use_stereo) {
+                if (!time_pts.second.has_right_observation_) {
+                    if (time_pts.second.right_drop_reason_ == 1) {
+                        ++adm.right_cleared_quality;
+                    } else if (time_pts.second.right_drop_reason_ == 2) {
+                        ++adm.right_cleared_depth;
+                    } else {
+                        ++adm.right_never;
+                    }
+                } else if (time_pts.second.is_right_reprojection_outlier_) {
+                    ++adm.right_outlier;
+                } else {
+                    ++adm.right_geom_fail;
+                }
+                ++adm.added_mono;
                 // 添加视觉因子(左图单目)
                 auto vision_factor_left = new MonoVisionFactor(pn_ref, pn_obs_left, R_imu_from_cam0, 
                                                                t_imu_from_cam0, 
@@ -1481,6 +1599,7 @@ void Optimizer::addVisionFactors(ceres::Problem& problem, const std::deque<doubl
                 // 保存残差ID
                 v_resi_ids.push_back(left_resi_ids);
             } else {
+                ++adm.added_stereo;
                 auto vision_factor_stereo = new StereoVisionFactor(
                     pn_ref, pn_obs_left, pn_obs_right, R_imu_from_cam0, t_imu_from_cam0,
                     R_cam1_from_cam0, t_cam1_from_cam0, 
@@ -1972,6 +2091,322 @@ void Optimizer::evalFactors(const ceres::Problem& problem, const std::string& pr
     if (prefix == "after opt") {
         resi_ids_.clear();
     }
+}
+
+// 某一类因子的白化残差统计（只读，不含鲁棒核）。evaluated==0 时 rms/max 无意义，调用方应输出 n/a
+Optimizer::DiagFactorStats Optimizer::diagFactorStats(const ceres::Problem& problem,
+                                                     const std::string& key) const {
+    DiagFactorStats stats;
+    const auto it = resi_ids_.find(key);
+    if (it == resi_ids_.end()) {
+        return stats;
+    }
+    double sum_sq = 0.0;
+    int dims = 0;
+    std::vector<double*> parameter_blocks;
+    std::vector<double> residual;
+    for (const auto& id : it->second) {
+        ++stats.attempted;
+        parameter_blocks.clear();
+        problem.GetParameterBlocksForResidualBlock(id, &parameter_blocks);
+        const ceres::CostFunction* cost_function = problem.GetCostFunctionForResidualBlock(id);
+        if (cost_function == nullptr) {
+            ++stats.failed;
+            continue;
+        }
+        residual.assign(cost_function->num_residuals(), 0.0);
+        if (!cost_function->Evaluate(parameter_blocks.data(), residual.data(), nullptr)) {
+            ++stats.failed;
+            continue;
+        }
+        double sq = 0.0;
+        for (const double r : residual) {
+            sq += r * r;
+        }
+        if (!std::isfinite(sq)) {
+            ++stats.nonfinite;
+            continue;
+        }
+        sum_sq += sq;
+        dims += static_cast<int>(residual.size());
+        stats.max = std::max(stats.max, std::sqrt(sq));
+        ++stats.evaluated;
+    }
+    stats.rms = dims > 0 ? std::sqrt(sum_sq / dims) : 0.0;
+    return stats;
+}
+
+// 视觉因子的 Huber 状态：二次区比例与 rho'（对梯度的缩放系数，不是信息量）
+Optimizer::DiagRobustStats Optimizer::diagVisionRobust(const ceres::Problem& problem) const {
+    DiagRobustStats stats;
+    const auto it = resi_ids_.find("REPROJECTION_FACTOR");
+    if (it == resi_ids_.end()) {
+        return stats;
+    }
+    const double delta2 = kVisionHuberDelta * kVisionHuberDelta;
+    std::vector<double> rho;
+    rho.reserve(it->second.size());
+    std::vector<double*> parameter_blocks;
+    std::vector<double> residual;
+    for (const auto& id : it->second) {
+        ++stats.attempted;
+        parameter_blocks.clear();
+        problem.GetParameterBlocksForResidualBlock(id, &parameter_blocks);
+        const ceres::CostFunction* cost_function = problem.GetCostFunctionForResidualBlock(id);
+        if (cost_function == nullptr) {
+            ++stats.failed;
+            continue;
+        }
+        residual.assign(cost_function->num_residuals(), 0.0);
+        if (!cost_function->Evaluate(parameter_blocks.data(), residual.data(), nullptr)) {
+            ++stats.failed;
+            continue;
+        }
+        double s = 0.0;
+        for (const double r : residual) {
+            s += r * r;
+        }
+        if (!std::isfinite(s)) {
+            ++stats.nonfinite;
+            continue;
+        }
+        ++stats.evaluated;
+        if (s <= delta2) {
+            ++stats.quadratic;
+            rho.push_back(1.0);
+        } else {
+            rho.push_back(kVisionHuberDelta / std::sqrt(s));
+        }
+    }
+    if (!rho.empty()) {
+        std::sort(rho.begin(), rho.end());
+        stats.rho_min = rho.front();
+        stats.rho_p10 = rho[static_cast<size_t>(0.1 * (rho.size() - 1))];
+        stats.rho_med = rho[rho.size() / 2];
+        double sum = 0.0;
+        for (const double x : rho) {
+            sum += x;
+        }
+        stats.rho_mean = sum / static_cast<double>(rho.size());
+    }
+    return stats;
+}
+
+// 逐关键帧诊断正文（求解后、consistencyCheck() 之前调用）
+std::string Optimizer::keyframeDiagBody(
+    const ceres::Problem& problem, const ceres::Solver::Summary& summary,
+    const std::deque<double>& timestamp_list, const std::vector<IntegrationStateData>& pre_states,
+    const std::vector<IntegrationStateData>& post_states,
+    const std::deque<std::shared_ptr<PreintegrationBase>>& preintegration_list,
+    const std::map<std::string, DiagFactorStats>& pre_stats) const {
+    (void)timestamp_list;
+    if (post_states.empty() || pre_states.size() != post_states.size()) {
+        return "diag_unavailable(state size mismatch)";
+    }
+    constexpr double kRad2Deg = 180.0 / M_PI;
+    const auto vec3 = [](const double* p) { return Eigen::Vector3d(p[0], p[1], p[2]); };
+
+    // 窗口内 pre→post_solve 的最大变化（含求解器的坐标自由度，不是发布轨迹的修正量）
+    double win_dr = 0.0, win_dv = 0.0;
+    for (size_t k = 0; k < post_states.size(); ++k) {
+        win_dr = std::max(win_dr, diagRotAngleDeg(pre_states[k], post_states[k]));
+        win_dv = std::max(win_dv, (vec3(post_states[k].mix) - vec3(pre_states[k].mix)).norm());
+    }
+
+    // IMU 区间：最新一段的明细 + 窗口内姿态残差最大的区间（求解后）
+    // 旋转残差/雅可比四元数符号分支不一致的区间数（求解前给求解器的状态 / 求解后）
+    int sign_mismatch_pre = 0, sign_mismatch_post = 0, sign_total = 0;
+    std::vector<double> sign_mismatch_pre_t;
+    PreintegrationDiag last_pre, last_post, worst, zworst;
+    double worst_res_deg = -1.0;
+    double max_zdiag = 0.0;
+    int zworst_axis = -1;
+    double zworst_res_deg = 0.0;
+    for (size_t k = 0; k < preintegration_list.size() && k + 1 < post_states.size(); ++k) {
+        const auto& pre_ptr = preintegration_list[k];
+        if (!pre_ptr) {
+            continue;
+        }
+        const PreintegrationDiag post = pre_ptr->diagnose(
+            Preintegration::stateFromData(post_states[k]),
+            Preintegration::stateFromData(post_states[k + 1]));
+        if (!post.valid) {
+            continue;
+        }
+        {
+            const PreintegrationDiag pre = pre_ptr->diagnose(
+                Preintegration::stateFromData(pre_states[k]),
+                Preintegration::stateFromData(pre_states[k + 1]));
+            ++sign_total;
+            if (pre.valid && pre.rot_sign_mismatch) {
+                ++sign_mismatch_pre;
+                if (sign_mismatch_pre_t.size() < 4) {
+                    sign_mismatch_pre_t.push_back(pre.t_begin);
+                }
+            }
+            if (post.rot_sign_mismatch) {
+                ++sign_mismatch_post;
+            }
+        }
+        const Eigen::Vector3d rot = post.raw_residual.segment<3>(6);
+        for (int a = 0; a < 3; ++a) {
+            if (post.rot_sigma_rad[a] > 0.0) {
+                const double z = std::abs(rot[a]) / post.rot_sigma_rad[a];
+                if (z > max_zdiag) {
+                    max_zdiag = z;
+                    zworst = post;
+                    zworst_axis = a;
+                    zworst_res_deg = rot[a] * kRad2Deg;
+                }
+            }
+        }
+        if (post.rot_res_true_deg > worst_res_deg) {
+            worst_res_deg = post.rot_res_true_deg;
+            worst = post;
+        }
+        if (k + 2 == post_states.size()) {
+            last_post = post;
+            last_pre = pre_ptr->diagnose(Preintegration::stateFromData(pre_states[k]),
+                                         Preintegration::stateFromData(pre_states[k + 1]));
+        }
+    }
+
+    const auto fmt_stats = [](std::ostringstream& os, const char* tag, const DiagFactorStats& st) {
+        os << " " << tag << "(n=" << st.attempted << " ok=" << st.evaluated
+           << " fail=" << st.failed << " nonfinite=" << st.nonfinite;
+        if (st.evaluated > 0) {
+            os << " rms=" << st.rms << " max=" << st.max;
+        } else {
+            os << " rms=n/a";
+        }
+        os << ")";
+    };
+    const auto pre_stat = [&](const char* key) {
+        const auto it = pre_stats.find(key);
+        return it == pre_stats.end() ? DiagFactorStats{} : it->second;
+    };
+    const auto sigma_deg = [&](const Eigen::Vector3d& v) { return v * kRad2Deg; };
+    const auto vec_str = [](std::ostringstream& os, const Eigen::Vector3d& v) {
+        os << "[" << v.x() << "," << v.y() << "," << v.z() << "]";
+    };
+
+    std::ostringstream os;
+    os << std::fixed << std::setprecision(3) << "iters=" << summary.iterations.size();
+    // Ceres 终止细节：cost 用 9 位有效数字并给差值，避免 cost0/cost1 打印相等造成误判；
+    // 终止信息 + 成功/失败步数 + 首/末迭代的梯度、步长、信赖域半径、相对下降
+    os << std::scientific << std::setprecision(9) << " cost0=" << summary.initial_cost
+       << " cost1=" << summary.final_cost << " dcost=" << summary.initial_cost - summary.final_cost
+       << std::fixed << std::setprecision(3)
+       << " term=" << ceres::TerminationTypeToString(summary.termination_type)
+       << " steps_ok=" << summary.num_successful_steps << " steps_bad=" << summary.num_unsuccessful_steps;
+    if (!summary.iterations.empty()) {
+        const auto& first = summary.iterations.front();
+        const auto& last = summary.iterations.back();
+        os << std::scientific << std::setprecision(3) << " g0=" << first.gradient_max_norm
+           << " g_last=" << last.gradient_max_norm << " step_last=" << last.step_norm
+           << " tr_radius_last=" << last.trust_region_radius << " dcost_last=" << last.cost_change
+           << " reldec_last=" << (last.cost > 0.0 ? last.cost_change / last.cost : 0.0)
+           << " last_step_ok=" << last.step_is_successful << std::fixed << std::setprecision(3);
+    }
+    {
+        std::string msg = summary.message;
+        for (char& c : msg) {
+            if (c == '\n' || c == '\r' || c == '|') {
+                c = ' ';
+            }
+        }
+        os << " msg=\"" << msg << "\"";
+    }
+    os << std::setprecision(4) << " | win_solve_shift dR_deg=" << win_dr << " dv=" << win_dv;
+    os << " | qsign_mismatch pre=" << sign_mismatch_pre << "/" << sign_total
+       << " post=" << sign_mismatch_post << "/" << sign_total;
+    if (!sign_mismatch_pre_t.empty()) {
+        os << " pre_t=[" << std::setprecision(3);
+        for (size_t i = 0; i < sign_mismatch_pre_t.size(); ++i) {
+            os << (i ? "," : "") << sign_mismatch_pre_t[i];
+        }
+        os << "]" << std::setprecision(4);
+    }
+
+    // 最新 IMU 区间：时间、转角、σ 构成
+    if (last_post.valid) {
+        const Eigen::Vector3d rpost = last_post.raw_residual.segment<3>(6) * kRad2Deg;
+        const Eigen::Vector3d rpre = last_pre.raw_residual.segment<3>(6) * kRad2Deg;
+        os << " | imu_last t=[" << std::setprecision(3) << last_post.t_begin << ","
+           << last_post.t_end << "]" << std::setprecision(4) << " dt=" << last_post.dt
+           << " int_rot_deg=" << last_post.interval_rot_deg << " acc_rot_deg=";
+        vec_str(os, sigma_deg(last_post.accumulated_rotation));
+        os << " base_sigma_deg=";
+        vec_str(os, sigma_deg(last_post.base_rot_sigma_rad));
+        os << " proxy_add_sigma_deg=";
+        vec_str(os, sigma_deg(last_post.proxy_add_var.cwiseSqrt()));
+        os << " tot_sigma_deg=";
+        vec_str(os, sigma_deg(last_post.rot_sigma_rad));
+        os << " rot_res_pre(true/small)_deg=" << last_pre.rot_res_true_deg << "/" << rpre.norm()
+           << " rot_res_post(true/small)_deg=" << last_post.rot_res_true_deg << "/" << rpost.norm()
+           << " vel_res_post=" << last_post.raw_residual.segment<3>(3).norm()
+           << " pos_res_post=" << last_post.raw_residual.segment<3>(0).norm();
+    }
+    // 窗口内姿态残差最大的区间，附起止时间与 σ 构成
+    if (worst.valid) {
+        os << " | imu_worst t=[" << std::setprecision(3) << worst.t_begin << "," << worst.t_end
+           << "]" << std::setprecision(4) << " rot_res_true_deg=" << worst.rot_res_true_deg
+           << " int_rot_deg=" << worst.interval_rot_deg << " acc_rot_deg=";
+        vec_str(os, sigma_deg(worst.accumulated_rotation));
+        os << " base_sigma_deg=";
+        vec_str(os, sigma_deg(worst.base_rot_sigma_rad));
+        os << " proxy_add_sigma_deg=";
+        vec_str(os, sigma_deg(worst.proxy_add_var.cwiseSqrt()));
+    }
+    // 对角归一化分量比（不是完整 IMU 因子的 Mahalanobis 距离）及其对应区间/轴：最紧的旋转约束
+    os << " zdiag_max=" << max_zdiag;
+    if (zworst.valid && zworst_axis >= 0) {
+        os << " imu_zmax t=[" << std::setprecision(3) << zworst.t_begin << "," << zworst.t_end << "]"
+           << std::setprecision(4) << " axis=" << "xyz"[zworst_axis] << " res_deg=" << zworst_res_deg
+           << " sigma_deg=" << zworst.rot_sigma_rad[zworst_axis] * kRad2Deg
+           << " base_sigma_deg=" << zworst.base_rot_sigma_rad[zworst_axis] * kRad2Deg
+           << " proxy_add_sigma_deg=" << std::sqrt(zworst.proxy_add_var[zworst_axis]) * kRad2Deg
+           << " acc_rot_deg=" << zworst.accumulated_rotation[zworst_axis] * kRad2Deg
+           << " int_rot_deg=" << zworst.interval_rot_deg
+           << " rot_res_true_deg=" << zworst.rot_res_true_deg;
+    }
+
+    // 因子残差（白化，不含鲁棒核）
+    os << " | wr";
+    fmt_stats(os, "imu_pre", pre_stat("IMU_FACTOR"));
+    fmt_stats(os, "imu_post", diagFactorStats(problem, "IMU_FACTOR"));
+    fmt_stats(os, "vis_pre", pre_stat("REPROJECTION_FACTOR"));
+    fmt_stats(os, "vis_post", diagFactorStats(problem, "REPROJECTION_FACTOR"));
+    fmt_stats(os, "marg_pre", pre_stat("MAGINAL_FACTOR"));
+    fmt_stats(os, "marg_post", diagFactorStats(problem, "MAGINAL_FACTOR"));
+
+    // Huber：二次区比例与 rho'；本轮实际视觉 σ
+    const DiagRobustStats rb = diagVisionRobust(problem);
+    os << " | huber(delta=" << kVisionHuberDelta << " n=" << rb.attempted << " ok=" << rb.evaluated
+       << " fail=" << rb.failed << " nonfinite=" << rb.nonfinite;
+    if (rb.evaluated > 0) {
+        os << " quad_pct=" << 100.0 * rb.quadratic / rb.evaluated << " rho_min=" << rb.rho_min
+           << " rho_p10=" << rb.rho_p10 << " rho_med=" << rb.rho_med << " rho_mean=" << rb.rho_mean;
+    } else {
+        os << " quad_pct=n/a";
+    }
+    os << ") vision_sigma_px=" << std::setprecision(3) << lastVisionSigmaPx();
+
+    // 视觉因子准入
+    const VisionAdmission& a = last_vision_admission_;
+    os << " | admit lm=" << a.landmarks << " skip(invalid=" << a.skip_invalid
+       << " not_tri=" << a.skip_not_triangulated << " few_obs=" << a.skip_few_obs
+       << " no_invdepth=" << a.skip_no_inv_depth << " ref_normal=" << a.skip_ref_normal
+       << " ref_idx=" << a.skip_ref_index << ") obs=" << a.obs_candidates << " skip(outlier="
+       << a.skip_outlier << " obs_idx=" << a.skip_obs_index << " obs_normal=" << a.skip_obs_normal
+       << " depth=" << a.skip_depth << ") mono=" << a.added_mono << " stereo=" << a.added_stereo
+       << " mono_reason(right_never=" << a.right_never << " cleared_quality=" << a.right_cleared_quality
+       << " cleared_depth=" << a.right_cleared_depth << " right_outlier=" << a.right_outlier
+       << " right_geom_fail=" << a.right_geom_fail << ") not_tri_latest_obs(right_never="
+       << a.nt_right_never << " cleared_quality=" << a.nt_right_cleared_quality
+       << " cleared_depth=" << a.nt_right_cleared_depth << " has_right=" << a.nt_has_right
+       << ") anchors=" << a.anchors;
+    return os.str();
 }
 
 // 剔除粗差路标点

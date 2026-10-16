@@ -1263,6 +1263,15 @@ void OptimizerConfigParams::loadConfigFromYAML(const YAML::Node& optimizer_node)
         if (optimizer_node["vision_sigma_ema_alpha"]) {
             vision_sigma_ema_alpha = optimizer_node["vision_sigma_ema_alpha"].as<double>();
         }
+        if (optimizer_node["keyframe_diag"]) {
+            keyframe_diag = optimizer_node["keyframe_diag"].as<bool>();
+        }
+        if (optimizer_node["keyframe_diag_start_s"]) {
+            keyframe_diag_start_s = optimizer_node["keyframe_diag_start_s"].as<double>();
+        }
+        if (optimizer_node["keyframe_diag_end_s"]) {
+            keyframe_diag_end_s = optimizer_node["keyframe_diag_end_s"].as<double>();
+        }
         if (optimizer_node["vision_sigma_min_blocks"]) {
             vision_sigma_min_blocks = optimizer_node["vision_sigma_min_blocks"].as<int>();
         }
@@ -1303,6 +1312,9 @@ void OptimizerConfigParams::printConfig() const {
     MSF_ILOG << "vision_sigma_margin: " << vision_sigma_margin << std::endl;
     MSF_ILOG << "vision_sigma_ema_alpha: " << vision_sigma_ema_alpha << std::endl;
     MSF_ILOG << "vision_sigma_min_blocks: " << vision_sigma_min_blocks << std::endl;
+    MSF_ILOG << "keyframe_diag: " << (keyframe_diag ? "true" : "false")
+             << " window=[" << std::fixed << keyframe_diag_start_s << ", " << keyframe_diag_end_s
+             << "] s (<=0: unbounded)" << std::endl;
 }
 
 // 读取静止检测的配置参数

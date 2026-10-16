@@ -117,7 +117,7 @@ void InsMech::insMechanization(const IntegrationConfiguration& config,
 }
 
 // 优化以后从状态开始重新开始机械编排
-void InsMech::redoInsMechanization(
+bool InsMech::redoInsMechanization(
     const IntegrationConfiguration& config, const IntegrationState& updated_state,
     size_t reserved_ins_num,
     Eigen::aligned_deque<std::pair<ImuMeasurement, IntegrationState>>& ins_window) {
@@ -127,7 +127,7 @@ void InsMech::redoInsMechanization(
 
     if (index == 0) {
         MSF_ELOG << "Failed to get right index in mechanization" << std::endl;
-        return;
+        return false;
     }
 
     // 拿到状态前后的IMU历元
@@ -161,7 +161,7 @@ void InsMech::redoInsMechanization(
 
     // 移除过期的IMU历元
     if (index < reserved_ins_num) {
-        return;
+        return true;
     }
 
     // 计算INS要删除的IMU历元
@@ -169,6 +169,7 @@ void InsMech::redoInsMechanization(
     for (size_t k = 0; k < counts; k++) {
         ins_window.pop_front();
     }
+    return true;
 }
 
 // 判断IMU是否需要插值

@@ -9,6 +9,27 @@
 
 namespace ms_fusion {
 
+// 只读诊断：未白化的预积分残差（p, v, 姿态, bg, ba 各 3 维）与姿态噪声标准差。
+// 不改变预积分对象的任何状态，仅供逐关键帧诊断日志使用。
+struct PreintegrationDiag {
+    bool valid = false;
+    double dt = 0.0;                  // 区间时长
+    double interval_rot_deg = 0.0;    // 区间净转角（delta_q）
+    Eigen::Matrix<double, 15, 1> raw_residual = Eigen::Matrix<double, 15, 1>::Zero();
+    Eigen::Vector3d rot_sigma_rad = Eigen::Vector3d::Zero();  // 含 gyr_scale_std 代理项
+    // 区间起止（IMU 时间戳）与姿态噪声的构成
+    double t_begin = 0.0;
+    double t_end = 0.0;
+    double rot_res_true_deg = 0.0;                                    // 真实旋转角（非 2·vec 小角近似）
+    // 诊断：旋转残差由“旋转矩阵→四元数”得到，而解析雅可比用状态四元数的乘积；二者取了相反的
+    // 四元数符号（q 与 -q 同一姿态）时残差不变、旋转雅可比反号。true 表示该区间符号分支不一致
+    bool rot_sign_mismatch = false;
+    double q_prod_w = 1.0;                                            // 状态四元数乘积 corrected_q⁻¹·q0⁻¹·q1 的 w
+    Eigen::Vector3d accumulated_rotation = Eigen::Vector3d::Zero();   // 各轴有符号去偏转角之和 [rad]
+    Eigen::Vector3d base_rot_sigma_rad = Eigen::Vector3d::Zero();     // 仅传播协方差（不含代理）
+    Eigen::Vector3d proxy_add_var = Eigen::Vector3d::Zero();          // gyr_scale_std 代理新增方差 [rad²]
+};
+
 class PreintegrationBase {
 public:
     // 构造函数（输入：积分对应的参数，第一帧IMU数据imu0, 当前时刻的）
@@ -76,6 +97,11 @@ public:
 
     // 拿到残差的数量
     virtual int numResiduals() = 0;
+
+    // 逐关键帧诊断用；默认不提供
+    virtual PreintegrationDiag diagnose(const IntegrationState&, const IntegrationState&) const {
+        return PreintegrationDiag{};
+    }
 
     // 拿到其他状态量的维度
     virtual int numMixParametersBlocks() = 0;

@@ -466,6 +466,15 @@ struct OptimizerConfigParams {
     double vision_sigma_margin = 1.5;
     double vision_sigma_ema_alpha = 0.2;
     int vision_sigma_min_blocks = 10;
+
+    // 逐关键帧诊断日志（[kf-diag]）：求解前后状态变化、最新 IMU 区间姿态残差/σ、
+    // 各类因子求解前后的残差。默认关闭，只读，不改变估计结果。
+    bool keyframe_diag = false;
+    // 诊断只在该传感器时间窗口内开启。用的是绝对传感器时间戳（与 timestamp_list 同一时钟），
+    // 不是“从首条 IMU 起的秒数”：TUM-VI outdoors3 的 t0=1520435236.025，要看数据第 820~840 s
+    // 就填 start=1520436056、end=1520436077。<=0 表示不限
+    double keyframe_diag_start_s = 0.0;
+    double keyframe_diag_end_s = 0.0;
 };
 
 // 静止检测（IMU 静止判据 + 运行时零速伪观测）的配置参数

@@ -337,6 +337,7 @@ void FeatureManager::triangulate(const TimeFrameID& frame_id, TriangulateStats* 
                 // 当前帧双目几何质量不达标：仅标记当前帧右目观测不可用，
                 // 不赋深度、保持 is_triangulated_ = false，绝不杀死左目时序轨迹（保持 is_valid_ = true）
                 observation.has_right_observation_ = false;
+                observation.right_drop_reason_ = 1;
                 continue;
             }
 
@@ -377,6 +378,7 @@ void FeatureManager::triangulate(const TimeFrameID& frame_id, TriangulateStats* 
         } else {
             // 双目初始化失败：仅标记该帧右目不可用，保持 is_triangulated_ = false，绝不修改 is_valid_，保住左目时序长轨迹
             observation.has_right_observation_ = false;
+            observation.right_drop_reason_ = 2;
             continue;
         }
     }

@@ -7,6 +7,7 @@
 
 #include <opencv2/core/types.hpp>
 #include <cmath>
+#include <cstdint>
 #include <map>
 #include <set>
 #include <unordered_map>
@@ -40,6 +41,7 @@ public:
         normal_point_right_ = point.segment<3>(2);
         has_right_observation_ = true;
         is_right_reprojection_outlier_ = false;
+        right_drop_reason_ = 0;
     }
 
     // A backend reprojection outlier can still carry a valid frontend 2D track.
@@ -69,6 +71,11 @@ public:
     // Availability of the measured pair; only input or independent same-frame
     // stereo validation may change it, never a cross-frame reprojection error.
     bool has_right_observation_ = false;
+
+    // 诊断用（不参与任何判断）：右目观测不可用的来源。
+    // 0 = 前端没有提供过右目（从未 addRightObservation）；
+    // 1 = 后端三角化质量不达标而清除；2 = 后端深度初始化失败（非有限/超出深度区间）而清除
+    uint8_t right_drop_reason_ = 0;
 
     // Recomputed from the current geometry after each solve. Anchor stereo
     // validation and fresh triangulation deliberately ignore this flag.

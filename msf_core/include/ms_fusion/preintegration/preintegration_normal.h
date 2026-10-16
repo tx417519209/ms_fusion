@@ -35,6 +35,10 @@ public:
     // 求残差的数量
     int numResiduals() override;
 
+    // 未白化残差与姿态 sigma（只读，供诊断日志）
+    PreintegrationDiag diagnose(const IntegrationState& state0,
+                                const IntegrationState& state1) const override;
+
     // 拿到状态中要mix的维度
     int numMixParametersBlocks() override;
 

@@ -513,9 +513,61 @@ void MsFusionManager::runInsThread() {
                     // 拿到当前的状态量
                     state = Preintegration::stateFromData(state_data_list_.back());
 
+                    // 逐关键帧诊断（optimizer.keyframe_diag）：记录重传播前后“同一 IMU 时刻”的
+                    // p/q/v，用关键帧时间 t_kf 与优化器的 [kf-diag] 关联。window[size-2] 是上一个
+                    // IMU 历元（当前历元刚入窗、状态未填）；redo 只会从队首弹出，该元素保持不变
+                    const auto& diag_cfg = ms_fusion_config_param_.optimizer_config_params_;
+                    const bool diag_redo =
+                        diag_cfg.keyframe_diag && ins_mech_window_.size() >= 2 &&
+                        (diag_cfg.keyframe_diag_start_s <= 0.0 ||
+                         state.timestamp >= diag_cfg.keyframe_diag_start_s) &&
+                        (diag_cfg.keyframe_diag_end_s <= 0.0 ||
+                         state.timestamp <= diag_cfg.keyframe_diag_end_s);
+                    IntegrationState redo_before;
+                    double redo_t_imu = 0.0;
+                    if (diag_redo) {
+                        const auto& prev = ins_mech_window_[ins_mech_window_.size() - 2];
+                        redo_t_imu = prev.first.timestamp;
+                        redo_before = prev.second;
+                    }
+                    const IntegrationState redo_kf_state = state;
+
                     // 开始进行机械编排
-                    InsMech::redoInsMechanization(integration_config_, state, reserved_ins_num_,
-                                                  ins_mech_window_);
+                    const bool redo_ok = InsMech::redoInsMechanization(
+                        integration_config_, state, reserved_ins_num_, ins_mech_window_);
+
+                    if (diag_redo) {
+                        const IntegrationState& redo_after =
+                            ins_mech_window_[ins_mech_window_.size() - 2].second;
+                        const auto fmt = [](const IntegrationState& st) {
+                            std::ostringstream os;
+                            os << std::fixed << std::setprecision(4) << "p=[" << st.p.x() << ","
+                               << st.p.y() << "," << st.p.z() << "] q(w,x,y,z)=["
+                               << std::setprecision(6) << st.q.w() << "," << st.q.x() << ","
+                               << st.q.y() << "," << st.q.z() << "] v=[" << std::setprecision(4)
+                               << st.v.x() << "," << st.v.y() << "," << st.v.z() << "]";
+                            return os.str();
+                        };
+                        const Eigen::Quaterniond dq = redo_before.q.inverse() * redo_after.q;
+                        // redo_ok=0 表示窗口里找不到关键帧时间对应的历元而提前返回（状态未更新），
+                        // 此时的零变化不是“重传播成功且无修正”；ts_match 检查前后状态时间戳是否
+                        // 都等于目标 IMU 时刻
+                        const bool ts_match = std::abs(redo_before.timestamp - redo_t_imu) < 1e-6 &&
+                                              std::abs(redo_after.timestamp - redo_t_imu) < 1e-6;
+                        MSF_ILOG << std::fixed << "[kf-diag-redo] t_kf=" << std::setprecision(6)
+                                 << redo_kf_state.timestamp << " t_imu=" << redo_t_imu
+                                 << " ts_before=" << redo_before.timestamp
+                                 << " ts_after=" << redo_after.timestamp << " ts_match=" << ts_match
+                                 << " redo_ok=" << redo_ok << " lag_s=" << std::setprecision(3)
+                                 << (redo_t_imu - redo_kf_state.timestamp) << " | kf "
+                                 << fmt(redo_kf_state) << " | before " << fmt(redo_before)
+                                 << " | after " << fmt(redo_after) << " | dp="
+                                 << std::setprecision(4) << (redo_after.p - redo_before.p).norm()
+                                 << " dv=" << (redo_after.v - redo_before.v).norm() << " dR_deg="
+                                 << 2.0 * std::atan2(dq.vec().norm(), std::abs(dq.w())) * 180.0 /
+                                        M_PI
+                                 << std::endl;
+                    }
 
                     // 释放状态量锁
                     state_mutex_.unlock();

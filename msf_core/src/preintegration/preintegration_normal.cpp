@@ -1,6 +1,9 @@
 #include "ms_fusion/preintegration/preintegration_normal.h"
 #include "ms_fusion/common/rotation.h"
 
+#include <algorithm>
+#include <cmath>
+
 namespace ms_fusion {
 
 PreintegrationNormal::PreintegrationNormal(std::shared_ptr<IntegrationParameters> parameters,
@@ -77,6 +80,59 @@ Eigen::MatrixXd PreintegrationNormal::evaluate(const IntegrationState& state0,
 
     residual = sqrt_information_ * residual;
     return residual;
+}
+
+PreintegrationDiag PreintegrationNormal::diagnose(const IntegrationState& state0,
+                                                  const IntegrationState& state1) const {
+    PreintegrationDiag diag;
+    diag.valid = true;
+    diag.dt = delta_time_;
+    diag.interval_rot_deg =
+        2.0 * std::asin(std::min(1.0, delta_state_.q.vec().norm())) * 180.0 / M_PI;
+
+    // 与 evaluate() 相同的一阶偏置修正，但只用局部量，不写成员
+    const Eigen::Vector3d dbg = state0.bg - delta_state_.bg;
+    const Eigen::Vector3d dba = state0.ba - delta_state_.ba;
+    const Eigen::Vector3d corrected_p = delta_state_.p + jacobian_.block<3, 3>(0, 12) * dba +
+                                        jacobian_.block<3, 3>(0, 9) * dbg;
+    const Eigen::Vector3d corrected_v = delta_state_.v + jacobian_.block<3, 3>(3, 12) * dba +
+                                        jacobian_.block<3, 3>(3, 9) * dbg;
+    const auto corrected_q =
+        delta_state_.q * Rotation::rotvec2quaternion(jacobian_.block<3, 3>(6, 9) * dbg);
+
+    const Eigen::Matrix3d R0_inv = state0.q.inverse().toRotationMatrix();
+    diag.raw_residual.segment<3>(0) = R0_inv * (state1.p - state0.p - state0.v * delta_time_ -
+                                                0.5 * gravity_ * delta_time_ * delta_time_) -
+                                      corrected_p;
+    diag.raw_residual.segment<3>(3) =
+        R0_inv * (state1.v - state0.v - gravity_ * delta_time_) - corrected_v;
+    const Eigen::Matrix3d M_rot =
+        corrected_q.inverse().toRotationMatrix() * R0_inv * state1.q.toRotationMatrix();
+    const auto q_rot = Rotation::matrix2quaternion(M_rot);
+    // 解析雅可比使用的“状态四元数乘积”误差四元数；与矩阵恢复的四元数点积为负即符号分支不一致
+    const Eigen::Quaterniond q_prod = corrected_q.inverse() * state0.q.inverse() * state1.q;
+    diag.q_prod_w = q_prod.w();
+    diag.rot_sign_mismatch = q_prod.coeffs().dot(q_rot.coeffs()) < 0.0;
+    diag.raw_residual.segment<3>(6) = 2 * q_rot.vec();
+    diag.rot_res_true_deg =
+        2.0 * std::atan2(q_rot.vec().norm(), std::abs(q_rot.w())) * 180.0 / M_PI;
+    diag.raw_residual.segment<3>(9) = state1.bg - state0.bg;
+    diag.raw_residual.segment<3>(12) = state1.ba - state0.ba;
+
+    if (!imu_buffer_.empty()) {
+        diag.t_begin = imu_buffer_.front().timestamp;
+        diag.t_end = imu_buffer_.back().timestamp;
+    }
+
+    // 姿态噪声：传播协方差对角 + gyr_scale_std 区间代理（与 evaluate() 一致）
+    const Eigen::Vector3d base_var = covariance_.block<3, 3>(6, 6).diagonal();
+    diag.accumulated_rotation = accumulated_rotation_;
+    diag.proxy_add_var = parameters_->gyr_scale_std > 0.0
+                             ? (parameters_->gyr_scale_std * accumulated_rotation_).cwiseAbs2().eval()
+                             : Eigen::Vector3d::Zero().eval();
+    diag.base_rot_sigma_rad = base_var.cwiseMax(0.0).cwiseSqrt();
+    diag.rot_sigma_rad = (base_var + diag.proxy_add_var).cwiseMax(0.0).cwiseSqrt();
+    return diag;
 }
 
 Eigen::MatrixXd PreintegrationNormal::residualJacobianPose0(const IntegrationState& state0,
@@ -218,9 +274,8 @@ void PreintegrationNormal::integrationProcess(unsigned long index) {
     ImuMeasurement imu_pre = compensationBias(imu_buffer_[index - 1]);
     ImuMeasurement imu_cur = compensationBias(imu_buffer_[index]);
 
-    if (parameters_->gyr_scale_std > 0.0) {
-        accumulated_rotation_ += imu_cur.dtheta;
-    }
+    // 无论 gyr_scale_std 是否为 0 都累计（仅诊断读取；非零时才进入信息矩阵）
+    accumulated_rotation_ += imu_cur.dtheta;
 
     // 连续状态积分和预积分
     integration(imu_pre, imu_cur);
