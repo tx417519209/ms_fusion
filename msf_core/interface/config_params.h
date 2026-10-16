@@ -95,6 +95,10 @@ struct ImuConfigParams {
         0.0, 0.0, 1.0, -0.08523,
         0.0, 0.0, 0.0,  1.0).finished();
 
+    // 区间级陀螺比例因子不确定度代理，无量纲，默认 0.005（0.5%）；配置为 0 则关闭、保持原协方差。
+    // 只放松预积分姿态信息，不校正测量，也不作为逐采样白噪声。
+    double gyr_scale_std = 0.005;
+
     // EIGEN的数据对齐
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };

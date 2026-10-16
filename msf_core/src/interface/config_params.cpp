@@ -378,6 +378,12 @@ void ImuConfigParams::loadConfigFromYAML(const YAML::Node& imu_node) {
             throw std::runtime_error("arw not found in config file");
         }
     
+        gyr_scale_std = imu_node["gyr_scale_std"]
+                            ? imu_node["gyr_scale_std"].as<double>() : 0.005;
+        if (!std::isfinite(gyr_scale_std) || gyr_scale_std < 0.0) {
+            throw std::runtime_error("imu.gyr_scale_std must be finite and nonnegative");
+        }
+
         // [3] 读取速度随机游走参数(m/s/sqrt(hr))
         if (imu_node["vrw"]) {
             vrw = imu_node["vrw"].as<double>();
@@ -444,6 +450,8 @@ void ImuConfigParams::loadConfigFromYAML(const YAML::Node& imu_node) {
 void ImuConfigParams::printConfig() const {
     // 打印arw
     MSF_ILOG << "arw: " << arw << " (deg/sqrt(hr))" << std::endl;
+    MSF_ILOG << "gyr_scale_std: " << gyr_scale_std
+             << " (fraction; interval attitude covariance proxy, 0=off)" << std::endl;
 
     // 打印vrw
     MSF_ILOG << "vrw: " << vrw << " (m/s/sqrt(hr))" << std::endl;

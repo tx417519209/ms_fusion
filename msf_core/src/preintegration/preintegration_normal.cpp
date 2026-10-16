@@ -18,8 +18,21 @@ Eigen::MatrixXd PreintegrationNormal::evaluate(const IntegrationState& state0,
                                                const IntegrationState& state1, 
                                                double* residuals) {
     if (sqrt_info_dirty_) {
-        sqrt_information_ = Eigen::LLT<Eigen::Matrix<double, NUM_STATE, NUM_STATE>>(
-                                covariance_.inverse()).matrixL().transpose();
+        // Interval proxy for correlated, unknown gyro scale residuals. Keep the
+        // propagated covariance untouched: repeated evaluations and later IMU
+        // samples must not accumulate or propagate this approximation again.
+        if (parameters_->gyr_scale_std > 0.0) {
+            Eigen::MatrixXd covariance_for_information = covariance_;
+            const Eigen::Vector3d angle_std =
+                parameters_->gyr_scale_std * accumulated_rotation_;
+            covariance_for_information.block<3, 3>(6, 6).diagonal() +=
+                angle_std.cwiseProduct(angle_std);
+            sqrt_information_ = Eigen::LLT<Eigen::Matrix<double, NUM_STATE, NUM_STATE>>(
+                                    covariance_for_information.inverse()).matrixL().transpose();
+        } else {
+            sqrt_information_ = Eigen::LLT<Eigen::Matrix<double, NUM_STATE, NUM_STATE>>(
+                                    covariance_.inverse()).matrixL().transpose();
+        }
         sqrt_info_dirty_ = false;
     }
 
@@ -205,6 +218,10 @@ void PreintegrationNormal::integrationProcess(unsigned long index) {
     ImuMeasurement imu_pre = compensationBias(imu_buffer_[index - 1]);
     ImuMeasurement imu_cur = compensationBias(imu_buffer_[index]);
 
+    if (parameters_->gyr_scale_std > 0.0) {
+        accumulated_rotation_ += imu_cur.dtheta;
+    }
+
     // 连续状态积分和预积分
     integration(imu_pre, imu_cur);
 
@@ -263,6 +280,8 @@ void PreintegrationNormal::updateJacobianAndCovariance(const ImuMeasurement&,
 // 设置状态
 void PreintegrationNormal::resetState(const IntegrationState& state, int num) {
     delta_time_ = 0;
+    accumulated_rotation_.setZero();
+    sqrt_info_dirty_ = true;
 
     // 设置状态量
     delta_state_.p.setZero();

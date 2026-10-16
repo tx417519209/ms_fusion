@@ -76,6 +76,7 @@ void MsFusionManager::initMsFusionManager(const MsFusionConfigParams& config_par
     // 构造预积分需要的参数指针
     integration_params_ptr_ = std::make_shared<IntegrationParameters>();
     integration_params_ptr_->gyr_arw = ms_fusion_config_param_.imu_config_params_.arw * D2R / 60.0;
+    integration_params_ptr_->gyr_scale_std = ms_fusion_config_param_.imu_config_params_.gyr_scale_std;
     integration_params_ptr_->gyr_bias_std = ms_fusion_config_param_.imu_config_params_.gb_std * D2R / 3600.0;
     integration_params_ptr_->acc_vrw = ms_fusion_config_param_.imu_config_params_.vrw / 60.0;
     integration_params_ptr_->acc_bias_std = ms_fusion_config_param_.imu_config_params_.ab_std * 1.0e-5;

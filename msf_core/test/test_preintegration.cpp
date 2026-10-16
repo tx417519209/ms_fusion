@@ -45,10 +45,12 @@ using ImuFunc = std::function<void(double, Eigen::Vector3d&, Eigen::Vector3d&)>;
 
 // 积分 n 个采样，返回对象；imu0 为 t=0 的第一帧
 std::unique_ptr<PreintegrationNormal> integrate(const IntegrationState& s0, int n,
-                                                const ImuFunc& f) {
+                                                const ImuFunc& f, double scale_std = 0.0) {
     Eigen::Vector3d w, a;
     f(0.0, w, a);
-    auto pre = std::make_unique<PreintegrationNormal>(makeParams(), makeImu(0.0, 0.0, w, a), s0);
+    auto params = makeParams();
+    params->gyr_scale_std = scale_std;
+    auto pre = std::make_unique<PreintegrationNormal>(params, makeImu(0.0, 0.0, w, a), s0);
     for (int i = 1; i <= n; ++i) {
         const double t = i * kDt;
         f(t, w, a);
@@ -193,12 +195,12 @@ TEST(PreintegrationNormal, FirstOrderBiasCorrectionBeatsNoCorrection) {
         << "corr=" << r_corr.head<9>().norm() << " nocorr=" << r_nocorr.head<9>().norm();
 }
 
-class JacobianFixture : public ::testing::Test {
+class JacobianFixture : public ::testing::TestWithParam<double> {
 protected:
     void SetUp() override {
         s0 = makeState0();
         // 与预积分时的零偏有差异，激活一阶零偏修正（及其 Jr 项）
-        pre = integrate(s0, 100, wavyImu);
+        pre = integrate(s0, 100, wavyImu, GetParam());
         s0.bg += Eigen::Vector3d(0.02, -0.015, 0.01);
         s0.ba += Eigen::Vector3d(-0.05, 0.03, 0.04);
         s1 = pre->currentState();
@@ -260,7 +262,7 @@ protected:
     std::unique_ptr<PreintegrationNormal> pre;
 };
 
-TEST_F(JacobianFixture, AllFourJacobiansMatchNumericDifferentiation) {
+TEST_P(JacobianFixture, AllFourJacobiansMatchNumericDifferentiation) {
     // 雅可比函数读取上一次 evaluate 缓存的 corrected_q_，先在名义点 evaluate 并取出全部雅可比，
     // 再做有限差分（有限差分会覆盖缓存）。
     eval(s0, s1);
@@ -278,6 +280,140 @@ TEST_F(JacobianFixture, AllFourJacobiansMatchNumericDifferentiation) {
     // 位姿块第 7 列（四元数 w 分量）不参与切空间，应恒为零
     EXPECT_EQ(Jp0.col(6).norm(), 0.0);
     EXPECT_EQ(Jp1.col(6).norm(), 0.0);
+}
+
+INSTANTIATE_TEST_SUITE_P(GyroScaleProxy, JacobianFixture,
+                         ::testing::Values(0.0, 0.005, 0.01));
+
+// Inspect weighting without adding diagnostic accessors to the production API.
+class CovarianceProbe : public PreintegrationNormal {
+public:
+    using PreintegrationNormal::PreintegrationNormal;
+    const Eigen::MatrixXd& rawCovariance() const { return covariance_; }
+    const Eigen::MatrixXd& sqrtInformation() const { return sqrt_information_; }
+};
+
+std::unique_ptr<CovarianceProbe> integrateProbe(
+    const std::shared_ptr<IntegrationParameters>& params, const IntegrationState& state,
+    int samples, const Eigen::Vector3d& measured_rate) {
+    const Eigen::Vector3d accel(0.2, -0.1, -kG);
+    auto pre = std::make_unique<CovarianceProbe>(
+        params, makeImu(0.0, 0.0, measured_rate, accel), state);
+    for (int i = 1; i <= samples; ++i) {
+        pre->addNewImu(makeImu(i * kDt, kDt, measured_rate, accel));
+    }
+    return pre;
+}
+
+void evaluateProbe(CovarianceProbe& pre, const IntegrationState& state0) {
+    Eigen::Matrix<double, 15, 1> residual;
+    pre.evaluate(state0, pre.currentState(), residual.data());
+    EXPECT_TRUE(residual.allFinite());
+    EXPECT_TRUE(pre.sqrtInformation().allFinite());
+}
+
+TEST(PreintegrationNormal, ZeroScaleStdUsesOriginalCovariance) {
+    auto params = makeParams();
+    ASSERT_EQ(params->gyr_scale_std, 0.0);
+    const IntegrationState state = makeState0();
+    auto pre = integrateProbe(params, state, 40, Eigen::Vector3d(0.5, -0.3, 0.8));
+    const Eigen::MatrixXd covariance = pre->rawCovariance();
+    evaluateProbe(*pre, state);
+    const Eigen::Matrix<double, 15, 15> expected =
+        Eigen::LLT<Eigen::Matrix<double, 15, 15>>(covariance.inverse()).matrixL().transpose();
+    EXPECT_TRUE(pre->sqrtInformation().isApprox(expected, 1e-12));
+    EXPECT_TRUE(pre->rawCovariance().isApprox(covariance, 0.0));
+}
+
+TEST(PreintegrationNormal, ScaleProxyUsesDebiasedAngleWithoutAccumulatingIntoCovariance) {
+    const IntegrationState state = makeState0();
+    const Eigen::Vector3d rate(0.5, -0.3, 0.8);
+    constexpr int samples = 40;
+    auto baseline = integrateProbe(makeParams(), state, samples, rate);
+    auto params = makeParams();
+    params->gyr_scale_std = 0.01;
+    auto pre = integrateProbe(params, state, samples, rate);
+    const Eigen::MatrixXd covariance = pre->rawCovariance();
+    EXPECT_TRUE(covariance.isApprox(baseline->rawCovariance(), 0.0));
+    EXPECT_TRUE(pre->currentState().p.isApprox(baseline->currentState().p, 0.0));
+    EXPECT_TRUE(pre->currentState().v.isApprox(baseline->currentState().v, 0.0));
+    EXPECT_TRUE(pre->currentState().q.coeffs().isApprox(
+        baseline->currentState().q.coeffs(), 0.0));
+
+    Eigen::Matrix<double, 15, 15> effective_covariance = covariance;
+    const Eigen::Vector3d angle_std =
+        params->gyr_scale_std * (samples * kDt) * (rate - state.bg);
+    effective_covariance.block<3, 3>(6, 6).diagonal() += angle_std.cwiseProduct(angle_std);
+    const Eigen::Matrix<double, 15, 15> expected =
+        Eigen::LLT<Eigen::Matrix<double, 15, 15>>(
+            effective_covariance.inverse()).matrixL().transpose();
+    evaluateProbe(*pre, state);
+    EXPECT_TRUE(pre->sqrtInformation().isApprox(expected, 1e-9));
+    const Eigen::MatrixXd first_information = pre->sqrtInformation();
+    for (int i = 0; i < 3; ++i) {
+        evaluateProbe(*pre, state);
+        EXPECT_TRUE(pre->sqrtInformation().isApprox(first_information, 0.0));
+        EXPECT_TRUE(pre->rawCovariance().isApprox(covariance, 0.0));
+    }
+
+    // Rebuilding the information after another sample must still use only the
+    // original propagated covariance plus the new interval's one-time proxy.
+    pre->addNewImu(makeImu((samples + 1) * kDt, kDt, rate, Eigen::Vector3d(0.2, -0.1, -kG)));
+    auto fresh = integrateProbe(params, state, samples + 1, rate);
+    evaluateProbe(*pre, state);
+    evaluateProbe(*fresh, state);
+    EXPECT_TRUE(pre->sqrtInformation().isApprox(fresh->sqrtInformation(), 1e-12));
+    EXPECT_TRUE(pre->rawCovariance().isApprox(fresh->rawCovariance(), 0.0));
+}
+
+TEST(PreintegrationNormal, ReintegrationResetsScaleAngleAndRefreshesInformation) {
+    auto params = makeParams();
+    params->gyr_scale_std = 0.005;
+    IntegrationState state = makeState0();
+    const Eigen::Vector3d rate(0.5, -0.3, 0.8);
+    auto pre = integrateProbe(params, state, 80, rate);
+    evaluateProbe(*pre, state);
+    state.bg += Eigen::Vector3d(0.01, -0.02, 0.03);
+    auto fresh = integrateProbe(params, state, 80, rate);
+    pre->reintegration(state);
+    evaluateProbe(*pre, state);
+    evaluateProbe(*fresh, state);
+    EXPECT_TRUE(pre->rawCovariance().isApprox(fresh->rawCovariance(), 1e-12));
+    EXPECT_TRUE(pre->sqrtInformation().isApprox(fresh->sqrtInformation(), 1e-12));
+}
+
+TEST(PreintegrationNormal, ZeroDebiasedRotationAddsNoScaleCovariance) {
+    const IntegrationState state = makeState0();
+    auto baseline = integrateProbe(makeParams(), state, 40, state.bg);
+    auto params = makeParams();
+    params->gyr_scale_std = 0.01;
+    auto pre = integrateProbe(params, state, 40, state.bg);
+    evaluateProbe(*baseline, state);
+    evaluateProbe(*pre, state);
+    EXPECT_TRUE(pre->sqrtInformation().isApprox(baseline->sqrtInformation(), 0.0));
+}
+
+TEST(PreintegrationNormal, ScaleProxySumsSignedRatherThanAbsoluteAxisAngles) {
+    const IntegrationState state;
+    const Eigen::Vector3d rate(0.0, 0.0, 2.0);
+    const Eigen::Vector3d accel(0.0, 0.0, -kG);
+    auto baseline_params = makeParams();
+    auto proxy_params = makeParams();
+    proxy_params->gyr_scale_std = 0.01;
+    CovarianceProbe baseline(baseline_params, makeImu(0.0, 0.0, rate, accel), state);
+    CovarianceProbe proxy(proxy_params, makeImu(0.0, 0.0, rate, accel), state);
+    for (int i = 1; i <= 40; ++i) {
+        Eigen::Vector3d measured_rate = rate;
+        if (i > 20) {
+            measured_rate = -rate;
+        }
+        const auto imu = makeImu(i * kDt, kDt, measured_rate, accel);
+        baseline.addNewImu(imu);
+        proxy.addNewImu(imu);
+    }
+    evaluateProbe(baseline, state);
+    evaluateProbe(proxy, state);
+    EXPECT_TRUE(proxy.sqrtInformation().isApprox(baseline.sqrtInformation(), 1e-12));
 }
 
 TEST(PreintegrationNormal, StateDataRoundTrip) {

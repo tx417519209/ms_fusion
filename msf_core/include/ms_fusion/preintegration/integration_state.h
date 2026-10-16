@@ -52,6 +52,9 @@ struct IntegrationParameters {
 
     // 当地重力, m / s^2
     double gravity;
+
+    // Dimensionless interval attitude covariance proxy; not gyro white noise.
+    double gyr_scale_std = 0.0;
 };
 
 // 机械编排需要的配置项
