@@ -6,6 +6,9 @@
 #include "ms_fusion/common/measurement.h"
 #include "ms_fusion/preintegration/preintegration.h"
 
+#include <deque>
+#include <vector>
+
 namespace ms_fusion {
 
 class Initializer {
@@ -54,6 +57,11 @@ private:
 private:
     // 静止判据阈值 + 防抖计数器
     ImuStaticDetector static_detector_;
+
+    // 连续通过静止判据的窗口各自的 IMU 均值（陀螺 3 + 加表 3），最多保留 confirm_windows
+    // 个，窗口不通过时清空。静止确认的那一刻用这些窗口的平均值作为 bg 和倾角的输入，
+    // 而不是只用最后一个 init_window_s（约 0.2 s）窗口，降低均值噪声
+    std::deque<std::vector<double>> window_average_history_;
 
     // 静止判据失败的提示至多每秒打一条，避免十几 Hz 刷屏
     double last_static_warn_timestamp_ = 0.0;

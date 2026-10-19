@@ -163,6 +163,17 @@ bool Initializer::checkImuStatic(const Eigen::aligned_vector<ImuMeasurement>& im
     ImuStaticWindowStats stats;
     const bool window_pass = static_detector_.evaluateWindow(imu_measurement_buff, average, &stats);
 
+    if (!window_pass) {
+        window_average_history_.clear();
+    } else {
+        // 记录连续通过的窗口均值，只保留最近 confirm_windows 个
+        window_average_history_.push_back(average);
+        while (static_cast<int>(window_average_history_.size()) >
+               static_detector_.thresholds().confirm_windows) {
+            window_average_history_.pop_front();
+        }
+    }
+
     MSF_VLOG << "std: " << std::fixed << std::setprecision(6)
               << stats.std_gyr[0] << ", " << stats.std_gyr[1] << ", " << stats.std_gyr[2] << ", "
               << stats.std_acc[0] << ", " << stats.std_acc[1] << ", " << stats.std_acc[2]
@@ -170,6 +181,23 @@ bool Initializer::checkImuStatic(const Eigen::aligned_vector<ImuMeasurement>& im
 
     const bool confirmed_static = static_detector_.update(window_pass);
     if (confirmed_static) {
+        // 用连续通过的这些窗口的平均值（陀螺→bg，加表→倾角），而不是只用最后一个窗口
+        if (!window_average_history_.empty()) {
+            std::vector<double> mean(6, 0.0);
+            for (const auto& window_average : window_average_history_) {
+                for (size_t k = 0; k < 6; ++k) {
+                    mean[k] += window_average[k];
+                }
+            }
+            const double invert = 1.0 / static_cast<double>(window_average_history_.size());
+            for (size_t k = 0; k < 6; ++k) {
+                average[k] = mean[k] * invert;
+            }
+            MSF_ILOG << "[Initializer] static init mean over " << window_average_history_.size()
+                     << " windows: gyr=[" << std::fixed << std::setprecision(6) << average[0]
+                     << ", " << average[1] << ", " << average[2] << "] rad/s" << std::endl;
+        }
+        window_average_history_.clear();
         return true;
     }
 
