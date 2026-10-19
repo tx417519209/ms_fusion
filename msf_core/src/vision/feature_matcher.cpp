@@ -358,7 +358,7 @@ public:
         try {
             Ort::SessionOptions options;
             options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-            options.SetIntraOpNumThreads(1);
+            options.SetIntraOpNumThreads(4);
             session_ = Ort::Session(env_, model_path.c_str(), options);
             const auto shape = session_.GetInputTypeInfo(1).GetTensorTypeAndShapeInfo().GetShape();
             if (shape.size() != 3 || shape[1] != max_keypoints_ ||

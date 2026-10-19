@@ -32,7 +32,7 @@ struct XFeatDetector::Impl {
 
     explicit Impl(const std::string& path) {
         options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-        options.SetIntraOpNumThreads(1);
+        options.SetIntraOpNumThreads(4);
         session = std::make_unique<Ort::Session>(env, path.c_str(), options);
         const auto shape = session->GetInputTypeInfo(0).GetTensorTypeAndShapeInfo().GetShape();
         if (shape.size() != 4 || shape[1] != kInputChannels || shape[2] <= 0 || shape[3] <= 0) {
