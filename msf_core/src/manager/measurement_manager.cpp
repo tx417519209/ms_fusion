@@ -644,18 +644,39 @@ void MeasurementManager::processImageMessage(const ImageMessage& image_message,
                                 );
     timing.track_process_ms = std::chrono::duration<double, std::milli>(
         Clock::now() - track_begin).count();
+    const auto track_pack_begin = Clock::now();
     tracking_ptr_->getFeatInfo(measurement.track_feat_info);
     measurement.has_loop_descriptors = tracking_ptr_->getLoopDescriptors(
         measurement.loop_keypoints, measurement.loop_descriptors);
     measurement.has_loop_landmark_descriptors = tracking_ptr_->getLoopLandmarkDescriptors(
         measurement.loop_landmark_ids, measurement.loop_landmark_keypoints,
         measurement.loop_landmark_descriptors);
+    timing.track_pack_ms = std::chrono::duration<double, std::milli>(
+        Clock::now() - track_pack_begin).count();
     const auto& track = tracking_ptr_->lastFrameTiming();
     timing.track_core_ms = track.core_ms;
     timing.track_loop_ms = track.loop_ms;
+    timing.track_loop_frame_match_ms = track.loop_frame_match_ms;
+    timing.track_loop_stereo_filter_ms = track.loop_stereo_filter_ms;
+    timing.track_temporal_match_exec_ms = track.temporal_match_exec_ms;
+    timing.track_stereo_match_exec_ms = track.stereo_match_exec_ms;
+    timing.track_detect_dense_ms = track.detect_dense_ms;
+    timing.track_landmark_resample_ms = track.landmark_resample_ms;
     timing.track_total_ms = timing.track_process_ms;
+    timing.input_features = track.input_features;
+    timing.supplemented_features = track.supplemented_features;
+    timing.temporal_left_features = track.temporal_left_features;
+    timing.temporal_right_features = track.temporal_right_features;
+    timing.stereo_candidate_features = track.stereo_candidate_features;
     timing.tracked_features = track.tracked_features;
     timing.new_detected_features = track.new_detected_features;
+    timing.detect_raw_features = track.detect_raw_features;
+    timing.npu_raw_features = track.npu_raw_features;
+    timing.npu_grid_features = track.npu_grid_features;
+    timing.stereo_input_features = track.stereo_input_features;
+    timing.stereo_fb_features = track.stereo_fb_features;
+    timing.stereo_epi_features = track.stereo_epi_features;
+    timing.stereo_subpix_features = track.stereo_subpix_features;
     timing.reference_age_ms = track.reference_age_ms;
     const auto& npu = tracking_ptr_->lastNpuTiming();
     if (npu.valid) {
@@ -669,7 +690,10 @@ void MeasurementManager::processImageMessage(const ImageMessage& image_message,
         timing.track_detect_total_ms = npu.total_ms;
         timing.npu_calls = static_cast<double>(npu.calls);
     }
+    const auto backend_enqueue_begin = Clock::now();
     const auto ready = MsFusionManager::SnglPtr()->pushVisionMeasurement(measurement);
+    timing.backend_enqueue_ms = std::chrono::duration<double, std::milli>(
+        ready - backend_enqueue_begin).count();
     timing.frontend_process_ms = std::chrono::duration<double, std::milli>(
         ready - process_begin).count();
     timing.frontend_e2e_ms = image_message.image_acquire_begin_valid
