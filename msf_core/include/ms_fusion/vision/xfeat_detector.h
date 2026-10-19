@@ -63,7 +63,7 @@ private:
     NpuDetectTiming last_detect_timing_;
     DescriptorMap last_desc_map_;
 
-#ifdef MSF_USE_AXERA_SUPERPOINT
+#if defined(MSF_USE_AXERA_SUPERPOINT) || defined(USE_ONNX)
     struct Impl;
     Impl* impl_ = nullptr;
     bool cacheDescriptorMap(int image_w, int image_h);

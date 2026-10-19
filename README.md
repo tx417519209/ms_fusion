@@ -1,7 +1,7 @@
 # MS Fusion
 
 面向 Axera AX650 NPU 板端实时运行的 **双目 + IMU 视觉惯性里程计（VIO）**，ROS 2（Humble）工作空间，
-可选轮速里程计、重定位和回环（位姿图）。
+可选轮速里程计和回环（位姿图）。
 
 ## 特点
 
@@ -9,8 +9,7 @@
   左目跨帧（temporal）和左右目同帧（stereo）两路匹配，之后叠加运动范围门控、对极约束 / RANSAC 过滤外点。
 - **IMU 滑窗优化**：IMU 预积分 + Ceres 滑窗（边缘化）联合优化，关键帧按间隔、视差、匹配数自适应触发。
 - **静止检测与零速更新**：基于 IMU 统计量的静止判定，支持 ZUPT；初始化支持静止对准。
-- **可选外部观测**：轮速里程计（`odom.enable`）、基于检测模型的场地关键点重定位（`reloc.enable`）、
-  匹配点云输出（`matched_cloud.enable`）。
+- **可选外部观测**：轮速里程计（`odom.enable`）和匹配点云输出（`matched_cloud.enable`）。
 - **回环**：独立的 `ms_fusion_loop` 节点，DBoW3 词典检索 + Mutual NN / PnP 几何验证 + 4DoF 位姿图，
   对 VIO 输出做平滑校正（`/odometry`）；VIO 原始输出为 `/odometry_vio`。
 - **配置驱动**：传感器外参、内参、噪声、前端/后端参数全部在一份 `msf_robot.yaml` 里，
@@ -26,7 +25,7 @@
 - **目标平台就是 Axera AX650N 板**（或同类 Axera SoC），需要在板端实时跑学习型特征 VIO，
   而不是在 PC 上跑离线算法。特征提取、匹配、取图都已经接好 NPU / IVPS，并做了零拷贝取图和 NPU 亲和性绑定。
 - 需要**学习型特征（XFeat / SuperPoint + LightGlue）**带来的弱纹理、光照变化鲁棒性，同时仍保持 IMU 紧耦合滑窗优化。
-- 需要在 VIO 之上叠加**轮速、重定位、回环**这些工程化能力，且都能用同一份 yaml 开关。
+- 需要在 VIO 之上叠加**轮速、回环**这些工程化能力，且都能用同一份 yaml 开关。
 - 想要一套**可复现的公开数据集评测流程**：TUM VI 的下载、预处理、回放、ATE 评估脚本齐全，
   `docs/` 里有 room1、outdoors4（回环）的板端评测记录。
 - 需要对前后端细节做实验：参数全部配置化，评测脚本一键产出日志和轨迹，便于做对照。
@@ -46,14 +45,14 @@
    - 因此「离线回放评测」也要在 AX650N 板端（或能访问 NPU 的环境）上执行，离线构建只是把输入从 IVPS 换成了 ROS 话题。
 2. **仅支持双目 + IMU**，不支持单目、RGB-D；相机模型仅 `pinhole-radtan4/5`，鱼眼数据需要先去畸变。
 3. **使用门槛偏高**：板端交叉编译 / qemu 下编译耗时长（脚本里限制了并行度防止内存不足）；
-   重定位依赖特定的场地检测模型和场地地图，换场景基本用不上；回环词典需要用目标场景图像自行训练。
-4. **模型文件范围有限**：`third_party_axera/asset/models/` 只带运行默认流程所需的 3 个 `.axmodel`
-   （XFeat top256、LightGlue top256、重定位检测模型）。SuperPoint 等其他模型未包含，
+   回环词典需要用目标场景图像自行训练。
+4. **模型文件范围有限**：`third_party/axera/asset/models/` 只带运行默认流程所需的 2 个 `.axmodel`
+   （XFeat top256、LightGlue top256）。SuperPoint 等其他模型未包含，
    要用 `tracking.extractor.feature_detector: superpoint` 时需自行准备模型并配置各 yaml 中的 `model_path`；
    配置里残留的 `superpoint_*.axmodel` 路径只在选择该检测器时才会被加载。
 5. **文档与评测覆盖有限**：目前有 TUM VI 的 room1 / outdoors4 等序列的评测记录，没有覆盖更多数据集的系统性对比；
    单元测试只覆盖纯数学模块（旋转、相机模型、IMU 预积分、位姿流形、直立 2 点求解器），
-   特征跟踪、重定位、回环、优化器整体等主流程没有单测，主要靠数据集回放验证。
+   特征跟踪、回环、优化器整体等主流程没有单测，主要靠数据集回放验证。
 6. **配置项很多、部分参数针对特定设备调过**：换设备或数据集时需要重新标定并按场景调参，
    TUM VI 各序列的 yaml 也是逐序列调出来的，不是一套参数通用。
 
@@ -62,7 +61,7 @@
 前提：一块能访问 NPU 的 AX650N 板（或板端容器），已装 ROS 2 Humble 与依赖库（见「编译 → 环境要求」）。
 
 ```bash
-# 1. 获取代码（默认流程所需的 XFeat / LightGlue / 重定位模型已在仓库里）
+# 1. 获取代码（默认流程所需的 XFeat / LightGlue 模型已在仓库里）
 git clone https://github.com/tx417519209/ms_fusion.git
 cd ms_fusion
 ```
@@ -87,10 +86,10 @@ bash scripts/run_offline_eval.sh tumvi_room1
 
 | 目录 | 说明 |
 |------|------|
-| `msf_core/` | 核心库（共享库）：特征提取/匹配、跟踪、预积分、初始化、滑窗优化、边缘化、重定位等；自带 Sophus |
+| `msf_core/` | 核心库（共享库）：特征提取/匹配、跟踪、预积分、初始化、滑窗优化、边缘化等；自带 Sophus |
 | `ros_wrapper/src/ms_fusion/` | ROS 2 节点 `ms_fusion_node`、launch、默认配置 |
 | `ros_wrapper/src/ms_fusion_loop/` | 回环节点 `ms_fusion_loop_node`、DBoW3 词典与训练工具 |
-| `third_party_axera/` | Axera NPU / IVPS 接口封装与头文件 |
+| `third_party/axera/` | Axera NPU / IVPS 接口封装与头文件 |
 | `tennis_court_map/` | 发布标准 ITF 网球场 `OccupancyGrid` 的辅助包 |
 | `scripts/` | 构建、运行、数据集预处理、回放、评估脚本 |
 | `calib_files/tumvi_*/` | TUM VI 各序列的配置（`msf_robot.yaml`） |
@@ -270,7 +269,7 @@ colcon test-result --verbose
 | `camera.cam0 / cam1` | `offline.topic`、`image_type`、`resolution`、`intrinsic`（fx fy cx cy）、`distortion`、`T_imu_cam`、`td_cam_to_imu` |
 | `odom` | 有轮速时 `enable: true` 并配置 `T_imu_from_odom` 与噪声；纯 VIO 设为 `false` |
 | `tracking` / `optimizer` | 特征检测器（`xfeat` / `superpoint`）、窗口大小、关键帧触发门限，按场景调整 |
-| `reloc` / `loop` | 不需要时保持 `enable: false`；开启回环需要与特征检测器匹配的 DBoW3 词典（`loop.voc_path`） |
+| `loop` | 开启回环需要与特征检测器匹配的 DBoW3 词典（`loop.voc_path`） |
 
 外参约定：`T_imu_cam` 为相机到（虚拟）IMU 的变换，IMU 坐标系为 front/right/down；
 如果标定来自 Kalibr 的 `T_cam_imu`，需要取逆，并先换算到虚拟 IMU 系。

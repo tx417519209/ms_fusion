@@ -17,6 +17,14 @@ find_package(OpenCV REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(LAPACK REQUIRED)
+# 代码用到 ceres::Manifold（Ceres >= 2.1），而 Ubuntu 22.04 apt 的 libceres-dev 只有 2.0。
+# x86_64 优先使用仓库内 third_party/ceres/x86_64（Ceres 2.2.0 静态库）；板端 aarch64 仍用系统/SDK 提供的 Ceres。
+set(MSF_VENDORED_CERES_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/ceres/${CMAKE_SYSTEM_PROCESSOR}/lib/cmake/Ceres")
+option(MSF_USE_VENDORED_CERES "Use third_party/ceres instead of the system Ceres" ON)
+if(MSF_USE_VENDORED_CERES AND EXISTS "${MSF_VENDORED_CERES_DIR}/CeresConfig.cmake")
+  set(Ceres_DIR "${MSF_VENDORED_CERES_DIR}" CACHE PATH "Ceres config dir" FORCE)
+  message(STATUS "Ceres: using vendored ${Ceres_DIR}")
+endif()
 find_package(Ceres REQUIRED)
 find_package(fmt REQUIRED)
 # 系统 spdlog（与 ROS rcl_logging_spdlog 同一份），日志宏后端，见 runtime_log.cpp
@@ -24,7 +32,7 @@ find_package(spdlog REQUIRED)
 
 message(STATUS "Ceres version: ${CERES_VERSION}")
 
-add_subdirectory(third_party/Sophus EXCLUDE_FROM_ALL)
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../third_party/Sophus" "${CMAKE_CURRENT_BINARY_DIR}/Sophus" EXCLUDE_FROM_ALL)
 
 # Axera SuperPoint 支持（板端默认开启，可通过 -DMSF_USE_AXERA_SUPERPOINT=OFF 关闭）
 if(NOT DEFINED MSF_USE_AXERA_SUPERPOINT)
@@ -35,6 +43,11 @@ if(NOT DEFINED MSF_USE_AXERA_SUPERPOINT)
   endif()
 endif()
 option(MSF_USE_AXERA_SUPERPOINT "Enable Axera NPU SuperPoint feature detector" ${MSF_USE_AXERA_SUPERPOINT})
+
+option(USE_ONNX "Use ONNX Runtime CPU inference instead of Axera NPU inference" OFF)
+if(USE_ONNX AND MSF_USE_AXERA_SUPERPOINT)
+  message(FATAL_ERROR "USE_ONNX and MSF_USE_AXERA_SUPERPOINT are mutually exclusive")
+endif()
 
 # Axera IVPS 零拷贝取图句柄（ImageMessage::image0/1 用 IvpsFramePtr 而非 cv::Mat）。
 # 与 ros_wrapper/src/ms_fusion/CMakeLists.txt 里的同名检测逻辑保持一致：msf_core
@@ -54,10 +67,10 @@ option(MSF_USE_AXERA_IVPS "Enable IVPS zero-copy frame handle in ImageMessage" $
 # 必须规范化成不含 ".." 的绝对路径：IVPS 开启时它会进入导出的
 # INTERFACE_INCLUDE_DIRECTORIES，CMake 按字符串前缀判断，"msf_core/../" 会被当成
 # 源码目录内路径，生成阶段直接报错。
-get_filename_component(MSF_AXERA_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../third_party_axera" ABSOLUTE)
+get_filename_component(MSF_AXERA_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/axera" ABSOLUTE)
 if(MSF_USE_AXERA_SUPERPOINT)
   if(NOT EXISTS "${MSF_AXERA_ROOT}/include/infer_api.h")
-    message(FATAL_ERROR "MSF_USE_AXERA_SUPERPOINT=ON but third_party_axera not found at ${MSF_AXERA_ROOT}")
+    message(FATAL_ERROR "MSF_USE_AXERA_SUPERPOINT=ON but third_party/axera not found at ${MSF_AXERA_ROOT}")
   endif()
   message(STATUS "MSF Axera SuperPoint: enabled")
 else()
@@ -82,6 +95,26 @@ file(GLOB_RECURSE SRC_FILES CONFIGURE_DEPENDS
   ${CMAKE_CURRENT_SOURCE_DIR}/src/factors/*.cpp)
 
 add_library(${PROJECT_NAME} SHARED ${SRC_FILES})
+
+if(USE_ONNX)
+  set(ONNXRUNTIME_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/onnxruntime" CACHE PATH
+      "ONNX Runtime root containing include/ and lib/")
+  find_path(ONNXRUNTIME_INCLUDE_DIR onnxruntime_cxx_api.h
+    HINTS "${ONNXRUNTIME_ROOT}/include" REQUIRED)
+  find_library(ONNXRUNTIME_LIBRARY onnxruntime
+    HINTS "${ONNXRUNTIME_ROOT}/lib" REQUIRED NO_DEFAULT_PATH)
+  target_compile_definitions(${PROJECT_NAME} PUBLIC USE_ONNX)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE
+    MSF_ONNX_MODEL_DIR="${ONNXRUNTIME_ROOT}/models")
+  target_include_directories(${PROJECT_NAME} PRIVATE "${ONNXRUNTIME_INCLUDE_DIR}")
+  target_link_libraries(${PROJECT_NAME} PRIVATE "${ONNXRUNTIME_LIBRARY}")
+  set_target_properties(${PROJECT_NAME} PROPERTIES
+    BUILD_RPATH "${ONNXRUNTIME_ROOT}/lib"
+    INSTALL_RPATH "\$ORIGIN")
+  # libonnxruntime 跟 libmsf_core.so 装在同一个 lib/，下游包通过 msf_core 的前缀即可找到。
+  install(DIRECTORY "${ONNXRUNTIME_ROOT}/lib/" DESTINATION lib
+          FILES_MATCHING PATTERN "libonnxruntime.so*")
+endif()
 
 # Precompiled headers（target_precompile_headers 需要 CMake 3.16）
 if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.16)

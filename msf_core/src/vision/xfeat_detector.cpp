@@ -17,7 +17,7 @@
 
 #include <opencv2/imgproc/imgproc.hpp>
 
-#ifdef MSF_USE_AXERA_SUPERPOINT
+#if defined(MSF_USE_AXERA_SUPERPOINT) && !defined(USE_ONNX)
 #include "infer_api.h"
 #include <ax_ivps_api.h>
 #endif
@@ -64,7 +64,7 @@ const char* xfeatDetectFailToString(SuperPointDetectFail reason) {
     return "unknown";
 }
 
-#ifdef MSF_USE_AXERA_SUPERPOINT
+#if defined(MSF_USE_AXERA_SUPERPOINT) && !defined(USE_ONNX)
 
 namespace {
 
@@ -904,7 +904,7 @@ bool XFeatDetector::detectWithDescriptors(const cv::Mat& gray_image,
     return sample_ok;
 }
 
-#else // MSF_USE_AXERA_SUPERPOINT
+#elif !defined(USE_ONNX) // no inference backend
 
 XFeatDetector::XFeatDetector(const XFeatConfigParams& config) : config_(config) {
     if (!config_.model_path.empty()) {
@@ -949,6 +949,6 @@ bool XFeatDetector::detectWithDescriptors(const cv::Mat& gray_image,
     return false;
 }
 
-#endif // MSF_USE_AXERA_SUPERPOINT
+#endif // inference backend
 
 } // namespace ms_fusion

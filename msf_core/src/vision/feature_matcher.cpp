@@ -22,6 +22,8 @@
 
 #ifdef MSF_USE_AXERA_SUPERPOINT
 #include "infer_api.h"
+#elif defined(USE_ONNX)
+#include <onnxruntime_cxx_api.h>
 #endif
 
 namespace ms_fusion {
@@ -335,6 +337,142 @@ private:
     bool ready_ = false;
 };
 
+#elif defined(USE_ONNX)
+
+namespace {
+
+constexpr int kLightGlueDescriptorDim = 64;
+constexpr float kLightGlueImageWidth = 640.0f;
+constexpr float kLightGlueImageHeight = 384.0f;
+
+}  // namespace
+
+// x86 CPU 版 LightGlue：输入/输出张量与 .axmodel 一致（mkpts0/feats0/image0_size/
+// mkpts1/feats1/image1_size → matches[1,N,2] int64 / scores[1,N]），N 固定为导出时的 topK。
+class FeatureMatcher::LightGlueRuntime {
+public:
+    LightGlueRuntime(const std::string& model_path, std::uint32_t /*npu_set*/,
+                     const char* tag, float score_threshold, int max_keypoints)
+        : tag_(tag), score_threshold_(score_threshold), max_keypoints_(max_keypoints),
+          env_(ORT_LOGGING_LEVEL_WARNING, "ms_fusion_lightglue"), session_(nullptr) {
+        try {
+            Ort::SessionOptions options;
+            options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+            options.SetIntraOpNumThreads(1);
+            session_ = Ort::Session(env_, model_path.c_str(), options);
+            const auto shape = session_.GetInputTypeInfo(1).GetTensorTypeAndShapeInfo().GetShape();
+            if (shape.size() != 3 || shape[1] != max_keypoints_ ||
+                shape[2] != kLightGlueDescriptorDim) {
+                MSF_ELOG << "[LightGlue][" << tag_ << "] ONNX keypoint count != "
+                         << "tracking.max_num_features(" << max_keypoints_ << "): " << model_path
+                         << std::endl;
+                return;
+            }
+            ready_ = true;
+            MSF_ILOG << "[LightGlue][" << tag_ << "][ONNX] initialized: model=" << model_path
+                     << std::endl;
+        } catch (const std::exception& e) {
+            MSF_ELOG << "[LightGlue][" << tag_ << "][ONNX] init failed: " << e.what()
+                     << " model=" << model_path << std::endl;
+        }
+    }
+
+    bool ready() const { return ready_; }
+    void setNpuAffinity(std::uint32_t) {}
+
+    bool match(const cv::Mat& desc_a, const cv::Mat& desc_b,
+               const std::vector<cv::Point2f>& points_a,
+               const std::vector<cv::Point2f>& points_b,
+               std::vector<std::pair<int, int>>& matches,
+               std::vector<float>& scores) {
+        matches.clear();
+        scores.clear();
+        if (!ready_) {
+            return false;
+        }
+        if (desc_a.type() != CV_32FC1 || desc_b.type() != CV_32FC1 ||
+            desc_a.cols != kLightGlueDescriptorDim || desc_b.cols != kLightGlueDescriptorDim ||
+            desc_a.rows <= 0 || desc_b.rows <= 0 ||
+            desc_a.rows > max_keypoints_ || desc_b.rows > max_keypoints_ ||
+            points_a.size() != static_cast<size_t>(desc_a.rows) ||
+            points_b.size() != static_cast<size_t>(desc_b.rows)) {
+            MSF_VLOG << "[LightGlue][" << tag_ << "] rejected input: desc_a=" << desc_a.rows
+                     << " desc_b=" << desc_b.rows << std::endl;
+            return false;
+        }
+        try {
+            std::vector<float> kpt0 = makeKeypoints(points_a), feat0 = makeDescriptors(desc_a);
+            std::vector<float> kpt1 = makeKeypoints(points_b), feat1 = makeDescriptors(desc_b);
+            std::array<float, 2> size0{kLightGlueImageWidth, kLightGlueImageHeight};
+            std::array<float, 2> size1 = size0;
+            const std::array<int64_t, 3> kpt_shape{1, max_keypoints_, 2};
+            const std::array<int64_t, 3> feat_shape{1, max_keypoints_, kLightGlueDescriptorDim};
+            const std::array<int64_t, 1> size_shape{2};
+            auto mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+            std::array<Ort::Value, 6> inputs{
+                Ort::Value::CreateTensor<float>(mem, kpt0.data(), kpt0.size(), kpt_shape.data(), 3),
+                Ort::Value::CreateTensor<float>(mem, feat0.data(), feat0.size(), feat_shape.data(), 3),
+                Ort::Value::CreateTensor<float>(mem, size0.data(), 2, size_shape.data(), 1),
+                Ort::Value::CreateTensor<float>(mem, kpt1.data(), kpt1.size(), kpt_shape.data(), 3),
+                Ort::Value::CreateTensor<float>(mem, feat1.data(), feat1.size(), feat_shape.data(), 3),
+                Ort::Value::CreateTensor<float>(mem, size1.data(), 2, size_shape.data(), 1)};
+            const char* input_names[] = {"mkpts0", "feats0", "image0_size",
+                                         "mkpts1", "feats1", "image1_size"};
+            const char* output_names[] = {"matches", "scores"};
+            auto outputs = session_.Run(Ort::RunOptions{nullptr}, input_names, inputs.data(), 6,
+                                        output_names, 2);
+            const size_t n = outputs[1].GetTensorTypeAndShapeInfo().GetElementCount();
+            if (outputs[0].GetTensorTypeAndShapeInfo().GetElementCount() < n * 2) {
+                return false;
+            }
+            const int64_t* output_matches = outputs[0].GetTensorData<int64_t>();
+            const float* output_scores = outputs[1].GetTensorData<float>();
+            for (size_t i = 0; i < n; ++i) {
+                const int64_t index_a = output_matches[2 * i];
+                const int64_t index_b = output_matches[2 * i + 1];
+                if (output_scores[i] < score_threshold_ || index_a < 0 || index_b < 0 ||
+                    index_a >= desc_a.rows || index_b >= desc_b.rows) {
+                    continue;
+                }
+                matches.emplace_back(static_cast<int>(index_a), static_cast<int>(index_b));
+                scores.push_back(output_scores[i]);
+            }
+            return true;
+        } catch (const std::exception& e) {
+            MSF_VLOG << "[LightGlue][" << tag_ << "][ONNX] inference failed: " << e.what()
+                     << std::endl;
+            return false;
+        }
+    }
+
+private:
+    std::vector<float> makeKeypoints(const std::vector<cv::Point2f>& points) const {
+        std::vector<float> output(static_cast<size_t>(max_keypoints_) * 2, 0.0f);
+        for (size_t i = 0; i < points.size(); ++i) {
+            output[2 * i] = points[i].x;
+            output[2 * i + 1] = points[i].y;
+        }
+        return output;
+    }
+
+    std::vector<float> makeDescriptors(const cv::Mat& descriptors) const {
+        std::vector<float> output(static_cast<size_t>(max_keypoints_) * kLightGlueDescriptorDim,
+                                  0.0f);
+        for (int row = 0; row < descriptors.rows; ++row) {
+            std::memcpy(output.data() + static_cast<size_t>(row) * kLightGlueDescriptorDim,
+                        descriptors.ptr<float>(row), kLightGlueDescriptorDim * sizeof(float));
+        }
+        return output;
+    }
+
+    std::string tag_;
+    float score_threshold_;
+    int max_keypoints_;
+    Ort::Env env_;
+    Ort::Session session_;
+    bool ready_ = false;
+};
+
 #endif
 
 FeatureMatcher::FeatureMatcher(const TrackingConfigParams& config,
@@ -343,7 +481,7 @@ FeatureMatcher::FeatureMatcher(const TrackingConfigParams& config,
     const auto& R_cam1_from_cam0 = camera_extrinsic_params.T_cam1_from_cam0.R;
     const auto& t_cam1_from_cam0 = camera_extrinsic_params.T_cam1_from_cam0.t;
     essential_matrix_ = Rotation::skewSymmetric(t_cam1_from_cam0) * R_cam1_from_cam0;
-#ifdef MSF_USE_AXERA_SUPERPOINT
+#if defined(MSF_USE_AXERA_SUPERPOINT) || defined(USE_ONNX)
     if (config_.use_lightglue && !config_.lightglue_model_path.empty()) {
         // 两个独立 handle 各占一个 NPU 核：时序匹配/双目稠密匹配互不排队，可以
         // 真正并行跑（见 config_params 里两个 npu_affinity 字段默认分别是
@@ -937,7 +1075,7 @@ void FeatureMatcher::matchTemporal(const std::vector<size_t>& ids_prev,
                residual_px <= config_.descriptor_match_max_motion_px;
     };
 
-#ifdef MSF_USE_AXERA_SUPERPOINT
+#if defined(MSF_USE_AXERA_SUPERPOINT) || defined(USE_ONNX)
     if (lightglue_enabled_ && descriptors_prev.cols == kLightGlueDescriptorDim &&
         descriptors_curr.cols == kLightGlueDescriptorDim &&
         descriptors_prev.rows <= config_.max_num_features &&
@@ -1150,7 +1288,7 @@ void FeatureMatcher::matchStereo(const std::vector<cv::Point2f>& pts_left,
         return;
     }
 
-#ifdef MSF_USE_AXERA_SUPERPOINT
+#if defined(MSF_USE_AXERA_SUPERPOINT) || defined(USE_ONNX)
     if (lightglue_enabled_ && descriptors_left.cols == kLightGlueDescriptorDim &&
         descriptors_right.cols == kLightGlueDescriptorDim &&
         descriptors_left.rows <= config_.max_num_features &&

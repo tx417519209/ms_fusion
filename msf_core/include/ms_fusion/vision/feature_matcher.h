@@ -142,7 +142,7 @@ private:
     void updateRansacNoiseEstimate(std::vector<double>& inlier_errors_px, size_t candidate_num,
                                    double median_to_sigma, DescriptorMatchStats* stats) const;
 
-#ifdef MSF_USE_AXERA_SUPERPOINT
+#if defined(MSF_USE_AXERA_SUPERPOINT) || defined(USE_ONNX)
     class LightGlueRuntime;
 #endif
 
@@ -162,7 +162,7 @@ private:
     // 时间匹配残差噪声平滑值（像素），<=0 表示还没有估计；matchTemporal() 是 const
     // 接口，故用 mutable，只在时间匹配线程里读写
     mutable double ransac_noise_ema_px_ = -1.0;
-#ifdef MSF_USE_AXERA_SUPERPOINT
+#if defined(MSF_USE_AXERA_SUPERPOINT) || defined(USE_ONNX)
     std::unique_ptr<LightGlueRuntime> temporal_lightglue_;
     std::unique_ptr<LightGlueRuntime> stereo_lightglue_;
 #endif

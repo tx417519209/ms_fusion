@@ -14,6 +14,27 @@ namespace ms_fusion {
 
 namespace {
 
+#ifdef USE_ONNX
+// x86 ONNX 构建：YAML 里写的是 .axmodel，这里把文件名换成对应的 .onnx。
+// 目录沿用 YAML（安装后 ../models 下有 .onnx）；从源码树直接跑、YAML 目录里找不到
+// 该文件时，退回编译期记录的 third_party/onnxruntime/models。
+void selectOnnxModel(std::string& path, const char* filename, const std::string& config_file) {
+    std::filesystem::path value(path);
+    value.replace_filename(filename);
+    if (!value.is_absolute()) {
+        const auto base = std::filesystem::path(config_file).parent_path();
+        if (!std::filesystem::exists(base / value)) {
+            const std::filesystem::path fallback = std::filesystem::path(MSF_ONNX_MODEL_DIR) / filename;
+            if (std::filesystem::exists(fallback)) {
+                path = fallback.string();
+                return;
+            }
+        }
+    }
+    path = value.string();
+}
+#endif
+
 void resolvePathRelativeToConfigFile(std::string& path, const std::string& config_file) {
     if (path.empty() || path.front() == '/') {
         return;
@@ -24,7 +45,7 @@ void resolvePathRelativeToConfigFile(std::string& path, const std::string& confi
     if (!std::filesystem::exists(resolved)) {
         throw std::runtime_error(
             "Path not found (relative to config dir " + base.string() + "): " + path +
-            ". If this is a reloc/tracking model, run colcon build --packages-select ms_fusion "
+            ". If this is a tracking model, run colcon build --packages-select ms_fusion "
             "so .axmodel files are installed to share/ms_fusion/models/.");
     }
     path = std::filesystem::absolute(resolved).lexically_normal().string();
@@ -138,11 +159,19 @@ void MsFusionConfigParams::loadConfigFromYAML(const std::string config_file) {
                 tracking_config_params_.superpoint_config_params.model_path, config_file);
         }
         if (tracking_config_params_.feature_detector == FeatureDetectorType::XFEAT) {
+#ifdef USE_ONNX
+            selectOnnxModel(tracking_config_params_.xfeat_config_params.model_path,
+                            "xfeat_384x640_maxpool_headnms_5x5_top256.onnx", config_file);
+#endif
             resolvePathRelativeToConfigFile(
                 tracking_config_params_.xfeat_config_params.model_path, config_file);
         }
         if (tracking_config_params_.use_lightglue &&
             !tracking_config_params_.lightglue_model_path.empty()) {
+#ifdef USE_ONNX
+            selectOnnxModel(tracking_config_params_.lightglue_model_path,
+                            "lightglue_top256_640_384_clip15_scoreclip.onnx", config_file);
+#endif
             resolvePathRelativeToConfigFile(
                 tracking_config_params_.lightglue_model_path, config_file);
         }
@@ -155,54 +184,6 @@ void MsFusionConfigParams::loadConfigFromYAML(const std::string config_file) {
         // 读取 Initializer 的配置参数（整段可选，不存在就用代码默认值）
         if (node["initializer"]) {
             initializer_config_params_.loadConfigFromYAML(node["initializer"]);
-        }
-
-        // 读取重定位的配置参数
-        if (node["reloc"]) {
-            // 读取reloc节点
-            YAML::Node reloc_node = node["reloc"];
-
-            // 读取reloc节点对应的配置参数
-            reloc_config_params_.loadConfigFromYAML(reloc_node);
-            resolvePathRelativeToConfigFile(reloc_config_params_.model_path, config_file);
-        } else {
-            throw std::runtime_error("reloc section not found in config file");
-        }
-
-        // loop.enable：决定周期重定位触发后，绝对修正落到 Loop 输出层还是
-        // 直接对齐融合后端（见 MsFusionManager::applyRelocCorrectionLocked）
-        if (node["loop"] && node["loop"]["enable"]) {
-            loop_enabled_ = node["loop"]["enable"].as<bool>();
-        }
-
-        // loop.max_correction_position_m/max_correction_yaw_deg：直接硬对齐路径
-        // （use_loop_route==false）的输出跳变验收上限，跟 ms_fusion_loop 侧
-        // PoseGraph::evaluateRelocJump 复用同一份配置（语义等价：两边比较的都是
-        // "没有额外未回写修正"的当前最终状态），不在 reloc 段单独配置一份。
-        if (node["loop"] && node["loop"]["max_correction_position_m"]) {
-            reloc_config_params_.max_correction_position_m =
-                node["loop"]["max_correction_position_m"].as<double>();
-        }
-        if (!std::isfinite(reloc_config_params_.max_correction_position_m)) {
-            throw std::runtime_error("loop.max_correction_position_m must be finite");
-        }
-        if (node["loop"] && node["loop"]["max_correction_yaw_deg"]) {
-            reloc_config_params_.max_correction_yaw_deg =
-                node["loop"]["max_correction_yaw_deg"].as<double>();
-        }
-        if (!std::isfinite(reloc_config_params_.max_correction_yaw_deg)) {
-            throw std::runtime_error("loop.max_correction_yaw_deg must be finite");
-        }
-
-        // loop.enable=false 时没有周期 reloc 的稳态落地点（原滑窗软约束已
-        // 删除），Manager 会忽略 periodic_reloc_period_s，不派发周期推理。
-        // 保留启动告警，避免现场误以为配置了正周期就会持续纠偏。
-        if (!loop_enabled_ && reloc_config_params_.enable &&
-            reloc_config_params_.periodic_reloc_period_s > 0.0) {
-            MSF_ILOG << "[WARN] loop.enable=false 且 reloc.periodic_reloc_period_s > 0："
-                     << "没有 Loop 输出层且旧的滑窗软约束已删除，周期重定位将被忽略，"
-                     << "不会派发 YOLO/PnP；初始化和手动 /reloc 不受影响。"
-                     << std::endl;
         }
 
     } catch (const YAML::Exception& e) {
@@ -240,9 +221,6 @@ void MsFusionConfigParams::printConfig() const {
 
     // 打印 Initializer 的配置参数
     initializer_config_params_.printConfig();
-
-    // 打印重定位的配置参数
-    reloc_config_params_.printConfig();
 
     MSF_ILOG << "loop.enable: " << (loop_enabled_ ? "true" : "false") << std::endl;
 }
@@ -1456,256 +1434,22 @@ void InitializerConfigParams::printConfig() const {
     MSF_ILOG << "init_timeout_s: " << init_timeout_s << " (s, <=0 disables)" << std::endl;
 }
 
-namespace {
-
-bool isSupportedRelocResolution(int width, int height) {
-    return (width == 640 && height == 384) || (width == 640 && height == 640) ||
-           (width == 512 && height == 512);
-}
-
-}  // namespace
-
-// 读取重定位的配置参数
-void RelocConfigParams::loadConfigFromYAML(const YAML::Node& reloc_node) {
-    try {
-        if (reloc_node["enable"]) {
-            enable = reloc_node["enable"].as<bool>();
-        }
-
-        // 读取模型的路径
-        if (reloc_node["model_path"]) {
-            model_path = reloc_node["model_path"].as<std::string>();
-        } else {
-            throw std::runtime_error("reloc.model_path not found in config file");
-        }
-
-        // 读取重定位输入分辨率
-        if (reloc_node["resolution"]) {
-            const auto resolution = reloc_node["resolution"].as<std::vector<int>>();
-            if (resolution.size() != 2) {
-                throw std::runtime_error("reloc.resolution must be [width, height]");
-            }
-            resolution_width = resolution[0];
-            resolution_height = resolution[1];
-            if (!isSupportedRelocResolution(resolution_width, resolution_height)) {
-                throw std::runtime_error(
-                    "reloc.resolution must be one of [640, 384], [640, 640], [512, 512]");
-            }
-        } else {
-            throw std::runtime_error("reloc.resolution not found in config file");
-        }
-
-        if (reloc_node["enable_undistort"]) {
-            enable_undistort = reloc_node["enable_undistort"].as<bool>();
-        }
-        if (reloc_node["undistort_alpha"]) {
-            undistort_alpha = reloc_node["undistort_alpha"].as<double>();
-        }
-        if (!std::isfinite(undistort_alpha) || undistort_alpha < 0.0 ||
-            undistort_alpha > 1.0) {
-            throw std::runtime_error("reloc.undistort_alpha must be in [0, 1]");
-        }
-        if (reloc_node["publish_debug_image"]) {
-            publish_debug_image = reloc_node["publish_debug_image"].as<bool>();
-        }
-        if (reloc_node["debug_image_topic"]) {
-            debug_image_topic = reloc_node["debug_image_topic"].as<std::string>();
-        }
-        if (debug_image_topic.empty()) {
-            throw std::runtime_error("reloc.debug_image_topic must not be empty");
-        }
-
-        // 读取置信度阈值
-        if (reloc_node["conf_threshold"]) {
-            conf_threshold = reloc_node["conf_threshold"].as<float>();
-        } else {
-            throw std::runtime_error("reloc.conf_threshold not found in config file");
-        }
-
-        // 读取NMS阈值
-        if (reloc_node["nms_threshold"]) {
-            nms_threshold = reloc_node["nms_threshold"].as<float>();
-        } else {
-            throw std::runtime_error("reloc.nms_threshold not found in config file");
-        }
-
-        // 读取类别数
-        if (reloc_node["num_classes"]) {
-            num_classes = reloc_node["num_classes"].as<int>();
-        } else {
-            throw std::runtime_error("reloc.num_classes not found in config file");
-        }
-        
-        // 读取最大检测数
-        if (reloc_node["max_det"]) {
-            max_det = reloc_node["max_det"].as<int>();
-        } else {
-            throw std::runtime_error("reloc.max_det not found in config file");
-        }
-
-        if (reloc_node["left_npu_affinity"]) {
-            left_npu_affinity =
-                parseNpuAffinity(reloc_node["left_npu_affinity"], "reloc.left_npu_affinity");
-        }
-        if (reloc_node["right_npu_affinity"]) {
-            right_npu_affinity =
-                parseNpuAffinity(reloc_node["right_npu_affinity"], "reloc.right_npu_affinity");
-        }
-
-        // 周期触发节奏（原 reloc_backend 字段）
-        if (reloc_node["periodic_reloc_period_s"]) {
-            periodic_reloc_period_s = reloc_node["periodic_reloc_period_s"].as<double>();
-        }
-        if (!std::isfinite(periodic_reloc_period_s)) {
-            throw std::runtime_error("reloc.periodic_reloc_period_s must be finite");
-        }
-        if (reloc_node["periodic_reloc_retry_interval_s"]) {
-            periodic_reloc_retry_interval_s =
-                reloc_node["periodic_reloc_retry_interval_s"].as<double>();
-        }
-        if (!std::isfinite(periodic_reloc_retry_interval_s) ||
-            periodic_reloc_retry_interval_s <= 0.0) {
-            throw std::runtime_error(
-                "reloc.periodic_reloc_retry_interval_s must be finite and > 0");
-        }
-        if (reloc_node["reloc_max_apply_delay_s"]) {
-            reloc_max_apply_delay_s = reloc_node["reloc_max_apply_delay_s"].as<double>();
-        }
-        if (!std::isfinite(reloc_max_apply_delay_s)) {
-            throw std::runtime_error("reloc.reloc_max_apply_delay_s must be finite");
-        }
-        // max_correction_position_m/max_correction_yaw_deg 不在这里解析：它们
-        // 复用 loop.max_correction_position_m/max_correction_yaw_deg，见
-        // MsFusionConfigParams::loadConfigFromYAML 里 loop.enable 旁边的解析。
-
-        // checkPose() 位姿验收门槛
-        if (reloc_node["max_height_m"]) {
-            max_height_m = reloc_node["max_height_m"].as<double>();
-        }
-        if (!std::isfinite(max_height_m) || max_height_m <= 0.0) {
-            throw std::runtime_error("reloc.max_height_m must be finite and > 0");
-        }
-        if (reloc_node["max_reprojection_error_px"]) {
-            max_reprojection_error_px = reloc_node["max_reprojection_error_px"].as<double>();
-        }
-        if (!std::isfinite(max_reprojection_error_px) || max_reprojection_error_px <= 0.0) {
-            throw std::runtime_error("reloc.max_reprojection_error_px must be finite and > 0");
-        }
-        if (reloc_node["min_offplane_stereo_pairs"]) {
-            min_offplane_stereo_pairs = reloc_node["min_offplane_stereo_pairs"].as<int>();
-        }
-        if (min_offplane_stereo_pairs < 0) {
-            throw std::runtime_error("reloc.min_offplane_stereo_pairs must be >= 0");
-        }
-
-        // 2 点直立解假设评分参数
-        if (reloc_node["inlier_pixel_threshold_px"]) {
-            inlier_pixel_threshold_px = reloc_node["inlier_pixel_threshold_px"].as<double>();
-        }
-        if (!std::isfinite(inlier_pixel_threshold_px) || inlier_pixel_threshold_px <= 0.0) {
-            throw std::runtime_error("reloc.inlier_pixel_threshold_px must be finite and > 0");
-        }
-        if (reloc_node["min_support"]) {
-            min_support = reloc_node["min_support"].as<int>();
-        }
-        if (min_support < 4) {
-            throw std::runtime_error("reloc.min_support must be >= 4");
-        }
-        if (reloc_node["periodic_multi_frame_confirm"]) {
-            periodic_multi_frame_confirm = reloc_node["periodic_multi_frame_confirm"].as<bool>();
-        }
-        if (reloc_node["confirm_frames"]) {
-            confirm_frames = reloc_node["confirm_frames"].as<int>();
-        }
-        if (confirm_frames < 2) {
-            throw std::runtime_error("reloc.confirm_frames must be >= 2");
-        }
-        if (reloc_node["confirm_max_position_m"]) {
-            confirm_max_position_m = reloc_node["confirm_max_position_m"].as<double>();
-        }
-        if (reloc_node["confirm_max_yaw_deg"]) {
-            confirm_max_yaw_deg = reloc_node["confirm_max_yaw_deg"].as<double>();
-        }
-        if (reloc_node["confirm_max_gap_s"]) {
-            confirm_max_gap_s = reloc_node["confirm_max_gap_s"].as<double>();
-        }
-        if (!std::isfinite(confirm_max_position_m) || confirm_max_position_m <= 0.0 ||
-            !std::isfinite(confirm_max_yaw_deg) || confirm_max_yaw_deg <= 0.0 ||
-            !std::isfinite(confirm_max_gap_s) || confirm_max_gap_s <= 0.0) {
-            throw std::runtime_error("reloc.confirm_max_* must be finite and > 0");
-        }
-
-    } catch (const YAML::Exception& e) {
-        throw std::runtime_error(
-            std::string("Failed to load reloc config from YAML file: ") + e.what());
-    }
-}
-
-// 打印对应的配置参数
-void RelocConfigParams::printConfig() const {
-    MSF_ILOG << "reloc.enable: " << (enable ? "true" : "false") << std::endl;
-    MSF_ILOG << "reloc.model_path: " << model_path << std::endl;
-    MSF_ILOG << "reloc.resolution: [" << resolution_width << ", " << resolution_height << "]"
-             << std::endl;
-    MSF_ILOG << "reloc.enable_undistort: " << (enable_undistort ? "true" : "false")
-             << std::endl;
-    MSF_ILOG << "reloc.undistort_alpha: " << undistort_alpha << std::endl;
-    MSF_ILOG << "reloc.publish_debug_image: " << (publish_debug_image ? "true" : "false")
-             << std::endl;
-    MSF_ILOG << "reloc.debug_image_topic: " << debug_image_topic << std::endl;
-    MSF_ILOG << "reloc.conf_threshold: " << conf_threshold << std::endl;
-    MSF_ILOG << "reloc.nms_threshold: " << nms_threshold << std::endl;
-    MSF_ILOG << "reloc.num_classes: " << num_classes << std::endl;
-    MSF_ILOG << "reloc.max_det: " << max_det << std::endl;
-    MSF_ILOG << "reloc.left_npu_affinity: 0b" << std::bitset<3>(left_npu_affinity) << std::endl;
-    MSF_ILOG << "reloc.right_npu_affinity: 0b" << std::bitset<3>(right_npu_affinity) << std::endl;
-    MSF_ILOG << "reloc.periodic_reloc_period_s: " << periodic_reloc_period_s << " (s)"
-             << (periodic_reloc_period_s > 0.0 ? "" : " (disabled)") << std::endl;
-    MSF_ILOG << "reloc.periodic_reloc_retry_interval_s: " << periodic_reloc_retry_interval_s
-             << " (s, loop.enable=true only)" << std::endl;
-    MSF_ILOG << "reloc.reloc_max_apply_delay_s: " << reloc_max_apply_delay_s
-             << (reloc_max_apply_delay_s > 0.0 ? " (s)" : " (disabled)") << std::endl;
-    MSF_ILOG << "reloc.max_correction_position_m (from loop.*): " << max_correction_position_m
-             << (max_correction_position_m > 0.0 ? " (m)" : " (disabled)") << std::endl;
-    MSF_ILOG << "reloc.max_correction_yaw_deg (from loop.*): " << max_correction_yaw_deg
-             << (max_correction_yaw_deg > 0.0 ? " (deg)" : " (disabled)") << std::endl;
-    MSF_ILOG << "reloc.max_height_m: " << max_height_m << " (m)" << std::endl;
-    MSF_ILOG << "reloc.max_reprojection_error_px: " << max_reprojection_error_px << " (px)"
-             << std::endl;
-    MSF_ILOG << "reloc.min_offplane_stereo_pairs: " << min_offplane_stereo_pairs
-             << (min_offplane_stereo_pairs > 0 ? "" : " (disabled)") << std::endl;
-    MSF_ILOG << "reloc.inlier_pixel_threshold_px: " << inlier_pixel_threshold_px << " (px)"
-             << std::endl;
-    MSF_ILOG << "reloc.min_support: " << min_support << std::endl;
-    MSF_ILOG << "reloc.periodic_multi_frame_confirm: " << (periodic_multi_frame_confirm ? "true" : "false")
-             << " confirm_frames=" << confirm_frames
-             << " confirm_max_position_m=" << confirm_max_position_m
-             << " confirm_max_yaw_deg=" << confirm_max_yaw_deg
-             << " confirm_max_gap_s=" << confirm_max_gap_s << std::endl;
-}
-
 // 读取EIGEN的4X4矩阵
 Eigen::Matrix4d ConfigUtils::readEigenMatrix4dFromYAML(const YAML::Node& matrix_node) {
     if (!matrix_node.IsSequence() || matrix_node.size() != 4) {
         throw std::runtime_error("Matrix must be a 4x4 matrix");
     }
 
-    // 定义矩阵的初值
     Eigen::Matrix4d matrix = Eigen::Matrix4d::Zero();
-
-    // 按照行读取矩阵的值
     for (int i = 0; i < 4; i++) {
         const YAML::Node row = matrix_node[i];
         if (!row.IsSequence() || row.size() != 4) {
             throw std::runtime_error("Matrix row must be a sequence of 4 elements");
         }
-
-        // 读取行中的4个元素
         for (int j = 0; j < 4; j++) {
             matrix(i, j) = row[j].as<double>();
         }
     }
-
     return matrix;
 }
 

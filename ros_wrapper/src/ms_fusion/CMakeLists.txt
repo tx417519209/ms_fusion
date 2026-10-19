@@ -37,9 +37,9 @@ if(NOT DEFINED MSF_USE_AXERA_IVPS)
     set(MSF_USE_AXERA_IVPS OFF)
   endif()
 endif()
-option(MSF_USE_AXERA_IVPS "Enable IVPS shared-memory image grab via third_party_axera" ${MSF_USE_AXERA_IVPS})
+option(MSF_USE_AXERA_IVPS "Enable IVPS shared-memory image grab via third_party/axera" ${MSF_USE_AXERA_IVPS})
 
-set(MSF_AXERA_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party_axera")
+set(MSF_AXERA_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/axera")
 
 set(dependencies
   rclcpp
@@ -78,13 +78,13 @@ ament_target_dependencies(${PROJECT_NAME} ${dependencies})
 
 if(MSF_USE_AXERA_IVPS)
   if(NOT EXISTS "${MSF_AXERA_ROOT}/include/grab_images_api.h")
-    message(FATAL_ERROR "MSF_USE_AXERA_IVPS=ON but third_party_axera not found at ${MSF_AXERA_ROOT}")
+    message(FATAL_ERROR "MSF_USE_AXERA_IVPS=ON but third_party/axera not found at ${MSF_AXERA_ROOT}")
   endif()
   message(STATUS "MSF Axera IVPS image grab: enabled")
   target_compile_definitions(${PROJECT_NAME} PUBLIC MSF_USE_AXERA_IVPS)
   # ## PUBLIC：ms_fusion_node 可执行文件（app/ms_fusion_app.cpp）通过
   # ## ms_fusion_node.h 间接 include 到 msf_core 的 ivps_frame_handle.h，
-  # ## 同样需要 third_party_axera/include，PRIVATE 只对本库自己的源文件生效。
+  # ## 同样需要 third_party/axera/include，PRIVATE 只对本库自己的源文件生效。
   target_include_directories(${PROJECT_NAME} PUBLIC ${MSF_AXERA_ROOT}/include)
   target_link_directories(${PROJECT_NAME} PUBLIC /soc/lib)
   target_link_options(${PROJECT_NAME} PUBLIC "LINKER:-rpath-link,/soc/lib")
@@ -134,10 +134,17 @@ install(
   DESTINATION share/${PROJECT_NAME}/config)
 
 install(
-  DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party_axera/asset/models/
+  DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/axera/asset/models/
   DESTINATION share/${PROJECT_NAME}/models
   FILES_MATCHING
   PATTERN "*.axmodel")
+
+if(USE_ONNX)
+  install(
+    DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/onnxruntime/models/
+    DESTINATION share/${PROJECT_NAME}/models
+    FILES_MATCHING PATTERN "*.onnx")
+endif()
 
 # DBoW3 vocab: put *.dbow3 under ms_fusion_loop/voc/, colcon installs to
 #   install/ms_fusion/share/ms_fusion/models/
