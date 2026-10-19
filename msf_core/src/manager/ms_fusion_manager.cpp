@@ -768,6 +768,9 @@ void MsFusionManager::runFusionThread() {
                                            ? Optimizer::PriorMode::kMovingOdomVelocity
                                            : Optimizer::PriorMode::kMovingNoVelocity));
 
+                    // 零偏先验以初始化时的 bg/ba 为中心（静止初始化量到的 bg 非 0）
+                    optimize_ptr_->setBiasPriorCenter(state_data_list_.back());
+
                     // 添加特征点信息
                     feature_manager_ptr_->tryAddKeyframe(
                         vision_measurement_cur.timestamp,

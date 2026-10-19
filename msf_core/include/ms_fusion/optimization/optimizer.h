@@ -72,6 +72,11 @@ public:
     void constructPriorInfo(const IntegrationStateData& state_data,
                             PriorMode mode = PriorMode::kStatic);
 
+    // 设置零偏先验（IMUErrorFactor）的中心为初始化状态的 bg/ba。只在初始化成功时调用：
+    // 静止初始化量到的 bg 才不会被以 0 为中心的先验拉回；边动边初始化 bg=0，行为不变。
+    // 世界系对齐等后续的 constructPriorInfo 调用不改它
+    void setBiasPriorCenter(const IntegrationStateData& state_data);
+
     // 世界系刚体对齐后丢弃旧边缘化因子（否则会把轨迹拉回旧坐标系导致飞）
     void clearMarginalizationAfterWorldAlign();
 
@@ -260,6 +265,9 @@ private:
     // 先验的标准差和对应的
     double mix_prior_[9];
     double mix_prior_std_[9];
+    // IMUErrorFactor 的零偏先验中心：bg(3)、ba(3)，默认 0
+    double bias_prior_bg_center_[3] = {0.0, 0.0, 0.0};
+    double bias_prior_ba_center_[3] = {0.0, 0.0, 0.0};
     double pose_prior_[7];
     double pose_prior_std_[6];
 

@@ -165,7 +165,8 @@ void Optimizer::initOptimize(std::deque<double>& timestamp_list,
 
         // 添加IMU的误差因子
         auto imu_error_factor = new IMUErrorFactor(integration_parameters_->gyr_bias_std,
-                                                    integration_parameters_->acc_bias_std);
+                                                    integration_parameters_->acc_bias_std,
+                                                    bias_prior_bg_center_, bias_prior_ba_center_);
         problem.AddResidualBlock(imu_error_factor, nullptr, state_data_list.back().mix);
     }
 
@@ -1363,7 +1364,8 @@ void Optimizer::addImuFactors(
 
     // 添加IMU的误差因子
     auto imu_error_factor = new IMUErrorFactor(integration_parameters_->gyr_bias_std,
-                                                integration_parameters_->acc_bias_std);
+                                                integration_parameters_->acc_bias_std,
+                                                bias_prior_bg_center_, bias_prior_ba_center_);
     auto imu_error_resi_id =
         problem.AddResidualBlock(imu_error_factor, nullptr, state_data_list.back().mix);
     resi_ids_["IMU_ERROR_FACTOR"] = std::vector<ceres::ResidualBlockId>{imu_error_resi_id};
@@ -1726,6 +1728,11 @@ void Optimizer::constructPriorInfo(const IntegrationStateData& state_data, Prior
 
     // 更新标志位
     is_use_prior_ = true;
+}
+
+void Optimizer::setBiasPriorCenter(const IntegrationStateData& state_data) {
+    memcpy(bias_prior_bg_center_, state_data.mix + 3, sizeof(double) * 3);
+    memcpy(bias_prior_ba_center_, state_data.mix + 6, sizeof(double) * 3);
 }
 
 void Optimizer::clearMarginalizationAfterWorldAlign() {
