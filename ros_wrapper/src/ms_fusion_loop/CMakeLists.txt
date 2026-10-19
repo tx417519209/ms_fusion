@@ -93,7 +93,7 @@ install(FILES tools/README.md
 # ---- Optional offline image collection / vocabulary training tools ----
 option(MSF_BUILD_LOOP_TOOLS "Build ms_fusion_loop offline collection/training tools" OFF)
 if(MSF_BUILD_LOOP_TOOLS)
-set(MSF_AXERA_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party_axera")
+set(MSF_AXERA_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/axera")
 if(NOT DEFINED MSF_USE_AXERA_SUPERPOINT)
   if(EXISTS "/soc/lib/libax_engine.so")
     set(MSF_USE_AXERA_SUPERPOINT ON)
