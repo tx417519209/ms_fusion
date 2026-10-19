@@ -19,8 +19,7 @@
 
 namespace ms_fusion {
 
-// tracking: GRP 7/8 chn=0 灰度金字塔；reloc/YOLO 的 RGB888(BGR) 不再单独抓一路，
-// 复用同一对 tracking 原始帧转 CSC 得到（见 MsfIvpsGrabber::onPairMatched）
+// tracking: GRP 7/8 chn=0 灰度金字塔。
 constexpr int MSF_IVPS_GRAB_TIMEOUT_MS = 200;
 
 inline void msf_ivps_ensure_sys_init() {
@@ -198,46 +197,6 @@ inline void msf_ivps_save_first_frame_if_needed(const IvpsFramePtr& frame_left,
                  << ": " << left_path << ", " << right_path << std::endl;
     } else {
         MSF_ELOG << "[IVPS] failed to save first tracking frame under " << save_dir << " (left_ok="
-                 << left_ok << ", right_ok=" << right_ok << ")" << std::endl;
-        saved.store(false, std::memory_order_relaxed);
-    }
-}
-
-inline void msf_ivps_save_first_reloc_frame_if_needed(const IvpsFramePtr& frame_left,
-                                                      const IvpsFramePtr& frame_right) {
-    // ## 同 msf_ivps_save_first_frame_if_needed：reloc 左右抓图线程也可能并发
-    // ## 触发到这里，用 atomic CAS 代替普通 static bool 避免数据竞争。
-    static std::atomic<bool> saved{false};
-    if (!frame_left || !frame_right) {
-        return;
-    }
-    const std::string& save_dir = msf_ivps_grab_config().first_frame_save_dir;
-    if (save_dir.empty()) {
-        return;
-    }
-    bool expected = false;
-    if (!saved.compare_exchange_strong(expected, true)) {
-        return;
-    }
-
-    // toCvMatCopy() 是真正的整帧内存拷贝，只在上面的 CAS 抢到"仅此一次"的名额之后
-    // 才做，不在每一帧都为这次诊断性落盘付出深拷贝的代价
-    const cv::Mat bgr_left = frame_left->toCvMatCopy();
-    const cv::Mat bgr_right = frame_right->toCvMatCopy();
-    if (bgr_left.empty() || bgr_right.empty()) {
-        saved.store(false, std::memory_order_relaxed);
-        return;
-    }
-
-    const std::string left_path = save_dir + "/ivps_first_frame_reloc_left.png";
-    const std::string right_path = save_dir + "/ivps_first_frame_reloc_right.png";
-    const bool left_ok = cv::imwrite(left_path, bgr_left);
-    const bool right_ok = cv::imwrite(right_path, bgr_right);
-    if (left_ok && right_ok) {
-        MSF_CLOG << "[IVPS] saved first reloc RGB frame " << bgr_left.cols << "x" << bgr_left.rows
-                 << ": " << left_path << ", " << right_path << std::endl;
-    } else {
-        MSF_ELOG << "[IVPS] failed to save first reloc frame under " << save_dir << " (left_ok="
                  << left_ok << ", right_ok=" << right_ok << ")" << std::endl;
         saved.store(false, std::memory_order_relaxed);
     }

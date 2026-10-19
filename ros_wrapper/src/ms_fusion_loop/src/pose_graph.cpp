@@ -43,7 +43,7 @@ cv::Mat descriptorsAsFloat(const cv::Mat &descriptors) {
   return result;
 }
 
-// 位姿修正生效时的统一打印格式（reloc correction 与位姿图优化共用），整行标绿：
+// 位姿图优化修正生效时的统一打印格式：
 // current=修正前对外发布的位姿，target=修正后的位姿，delta=两者之差
 void logPoseCorrection(const std::string &label, const Vector3d &current_t,
                        const Matrix3d &current_R, const Vector3d &target_t,
@@ -105,36 +105,11 @@ PoseGraph::PoseGraph() {
   r_drift = Eigen::Matrix3d::Identity();
   w_t_vio = Eigen::Vector3d(0, 0, 0);
   w_r_vio = Eigen::Matrix3d::Identity();
-  reloc_raw_t = Eigen::Vector3d::Zero();
-  reloc_raw_R = Eigen::Matrix3d::Identity();
-  reloc_target_t = Eigen::Vector3d::Zero();
-  reloc_target_R = Eigen::Matrix3d::Identity();
-  reloc_anchor_r_drift = Eigen::Matrix3d::Identity();
-  reloc_anchor_t_drift = Eigen::Vector3d::Zero();
   global_index = 0;
   sequence_cnt = 0;
   sequence_loop.push_back(0);
   base_sequence = 1;
   use_imu = false;
-}
-
-void PoseGraph::computeRelocOutputCorrectionLocked(Matrix3d &r, Vector3d &t) const {
-  r = Matrix3d::Identity();
-  t = Vector3d::Zero();
-  if (!has_reloc_anchor) {
-    return;
-  }
-
-  // 锚点用它所在关键帧的 drift 映射到 graph 系，而不是当前 drift：回环优化修正
-  // 锚点之后累积的漂移时，当前位姿随之移动，锚点本身仍落在 reloc target 上
-  const Vector3d graph_anchor_t =
-      reloc_anchor_r_drift * (w_r_vio * reloc_raw_t + w_t_vio) + reloc_anchor_t_drift;
-  const Matrix3d graph_anchor_R = reloc_anchor_r_drift * w_r_vio * reloc_raw_R;
-  const double graph_yaw_deg = Utility::R2ypr(graph_anchor_R).x();
-  const double target_yaw_deg = Utility::R2ypr(reloc_target_R).x();
-  const double delta_yaw_deg = Utility::normalizeAngle(target_yaw_deg - graph_yaw_deg);
-  r = Utility::ypr2R(Vector3d(delta_yaw_deg, 0.0, 0.0));
-  t = reloc_target_t - r * graph_anchor_t;
 }
 
 void PoseGraph::computeCurrentFromRawLocked(const Vector3d &raw_t, const Matrix3d &raw_R,
@@ -146,63 +121,21 @@ void PoseGraph::computeOutputFromVioLocked(const Vector3d &vio_t, const Matrix3d
                                            Vector3d &current_t, Matrix3d &current_R) const {
   const Vector3d graph_t = r_drift * vio_t + t_drift;
   const Matrix3d graph_R = r_drift * vio_R;
-  Matrix3d old_reloc_r;
-  Vector3d old_reloc_t;
-  computeRelocOutputCorrectionLocked(old_reloc_r, old_reloc_t);
-  current_t = old_reloc_r * graph_t + old_reloc_t;
-  current_R = old_reloc_r * graph_R;
-}
-
-void PoseGraph::updateRelocAnchorDriftLocked(int cur_index) {
-  if (!has_reloc_anchor || reloc_anchor_kf_index < 0) {
-    return;
-  }
-  // 锚点关键帧比本次优化的 cur 还新：它和 cur 之后的关键帧一样整体套用新 drift
-  if (reloc_anchor_kf_index > cur_index) {
-    reloc_anchor_r_drift = r_drift;
-    reloc_anchor_t_drift = t_drift;
-    return;
-  }
-  for (KeyFrame *kf : keyframelist) {
-    if (kf->index == reloc_anchor_kf_index) {
-      keyframeDriftLocked(kf, reloc_anchor_r_drift, reloc_anchor_t_drift);
-      return;
-    }
-  }
-}
-
-void PoseGraph::keyframeDriftLocked(KeyFrame *kf, Matrix3d &r, Vector3d &t) const {
-  Vector3d kf_t, kf_vio_t;
-  Matrix3d kf_R, kf_vio_R;
-  kf->getPose(kf_t, kf_R);
-  kf->getVioPose(kf_vio_t, kf_vio_R);
-  // 与 optimize4DoF/6DoF 里 r_drift 的定义保持一致
-  if (use_imu) {
-    const double kf_yaw_drift = Utility::R2ypr(kf_R).x() - Utility::R2ypr(kf_vio_R).x();
-    r = Utility::ypr2R(Vector3d(kf_yaw_drift, 0, 0));
-  } else {
-    r = kf_R * kf_vio_R.transpose();
-  }
-  t = kf_t - r * kf_vio_t;
+  current_t = graph_t;
+  current_R = graph_R;
 }
 
 void PoseGraph::getVioCorrection(Matrix3d &w_r, Vector3d &w_t, Matrix3d &r, Vector3d &t) {
   std::lock_guard<std::mutex> lock(m_drift);
-  Matrix3d reloc_r;
-  Vector3d reloc_t;
-  computeRelocOutputCorrectionLocked(reloc_r, reloc_t);
   w_r = w_r_vio;
   w_t = w_t_vio;
-  r = reloc_r * r_drift;
-  t = reloc_r * t_drift + reloc_t;
+  r = r_drift;
+  t = t_drift;
 }
 
 void PoseGraph::computeTotalCorrectionLocked(Matrix3d &Cr, Vector3d &Ct) const {
-  Matrix3d reloc_r;
-  Vector3d reloc_t;
-  computeRelocOutputCorrectionLocked(reloc_r, reloc_t);
-  Cr = reloc_r * r_drift * w_r_vio;
-  Ct = reloc_r * (r_drift * w_t_vio + t_drift) + reloc_t;
+  Cr = r_drift * w_r_vio;
+  Ct = r_drift * w_t_vio + t_drift;
 }
 
 void PoseGraph::smoothOutputPose(double stamp, const Vector3d &raw_t, const Matrix3d &raw_R,
@@ -222,12 +155,7 @@ void PoseGraph::smoothOutputPose(double stamp, const Vector3d &raw_t, const Matr
     *absorbed = false;
   }
 
-  if (smooth_reset_pending) {
-    // 直接落地：清空残差，立即输出新的绝对位姿
-    smooth_reset_pending = false;
-    smooth_dp.setZero();
-    smooth_dyaw_deg = 0.0;
-  } else {
+  {
     // 1) 先把旧残差衰减到当前时间戳（重复戳不衰减，回退只重置时间基准）
     const double tau = g_loop_config.output_smooth_tau_s;
     if (smooth_has_stamp && stamp > smooth_last_stamp && tau > 0.0) {
@@ -264,106 +192,6 @@ void PoseGraph::smoothOutputPose(double stamp, const Vector3d &raw_t, const Matr
   if (residual_yaw_deg != nullptr) {
     *residual_yaw_deg = smooth_dyaw_deg;
   }
-}
-
-PoseGraph::RelocJumpCheck PoseGraph::evaluateRelocJumpLocked(const Vector3d &raw_t,
-                                                              const Matrix3d &raw_R,
-                                                              const Vector3d &target_t,
-                                                              const Matrix3d &target_R) const {
-  RelocJumpCheck check;
-  check.limit_position_m = g_loop_config.max_correction_position_m;
-  check.limit_yaw_deg = g_loop_config.max_correction_yaw_deg;
-
-  check.has_anchor = has_reloc_anchor;
-  if (!has_reloc_anchor) {
-    // 还没有锚点：这是启动后第一次落地的修正，用于确认机器实际位置，不是
-    // 运行期漂移修正，无从比较，调用方应视为"不超限"直接放行。
-    return check;
-  }
-
-  Vector3d current_t;
-  Matrix3d current_R;
-  computeCurrentFromRawLocked(raw_t, raw_R, current_t, current_R);
-  const double current_yaw_deg = Utility::R2ypr(current_R).x();
-  const double target_yaw_deg = Utility::R2ypr(target_R).x();
-  check.delta_yaw_deg = Utility::normalizeAngle(target_yaw_deg - current_yaw_deg);
-  check.delta_position_m = (target_t - current_t).norm();
-
-  const bool exceeds_pos =
-      check.limit_position_m > 0.0 && check.delta_position_m > check.limit_position_m;
-  const bool exceeds_yaw =
-      check.limit_yaw_deg > 0.0 && std::abs(check.delta_yaw_deg) > check.limit_yaw_deg;
-  check.exceeds_limit = exceeds_pos || exceeds_yaw;
-  return check;
-}
-
-PoseGraph::RelocJumpCheck PoseGraph::applyRelocCorrection(
-    double image_time, const Vector3d &raw_t, const Matrix3d &raw_R, const Vector3d &target_t,
-    const Matrix3d &target_R, bool check_jump) {
-  RelocJumpCheck check;
-  if (!raw_t.allFinite() || !raw_R.allFinite() || !target_t.allFinite() ||
-      !target_R.allFinite()) {
-    check.invalid = true;
-    return check;
-  }
-
-  // 锁顺序与优化线程一致：先 m_keyframelist 再 m_drift。跳变验收和落地在同一把
-  // 锁内完成，避免两者之间回环优化改变输出，使验收结果与实际落地不一致。
-  std::lock_guard<std::mutex> kf_lock(m_keyframelist);
-  std::lock_guard<std::mutex> lock(m_drift);
-  check = evaluateRelocJumpLocked(raw_t, raw_R, target_t, target_R);
-  if (check_jump && check.has_anchor && check.exceeds_limit) {
-    return check;
-  }
-
-  // 用旧锚点计算此刻已经对外发布的位姿，仅用于打印记录
-  Vector3d current_t;
-  Matrix3d current_R;
-  computeCurrentFromRawLocked(raw_t, raw_R, current_t, current_R);
-
-  // 保存绝对锚点，而不是缓存一次性增量。锚点挂在时间上最接近 reloc 图像的关键帧
-  // 上，记下该关键帧的 drift；之后回环优化移动该关键帧时同步更新这份 drift，
-  // 外层变换随之重算，锚点不会被推走，锚点之后的漂移修正则能传到输出。
-  reloc_raw_t = raw_t;
-  reloc_raw_R = raw_R;
-  reloc_target_t = target_t;
-  reloc_target_R = target_R;
-  KeyFrame *anchor_kf = nullptr;
-  for (auto rit = keyframelist.rbegin(); rit != keyframelist.rend(); ++rit) {
-    if (anchor_kf == nullptr ||
-        std::abs((*rit)->time_stamp - image_time) < std::abs(anchor_kf->time_stamp - image_time)) {
-      anchor_kf = *rit;
-    }
-    if ((*rit)->time_stamp < image_time) {
-      break;  // 关键帧按时间递增，再往前只会更远
-    }
-  }
-  if (anchor_kf != nullptr) {
-    reloc_anchor_kf_index = anchor_kf->index;
-    keyframeDriftLocked(anchor_kf, reloc_anchor_r_drift, reloc_anchor_t_drift);
-    MSF_ILOGF("[ms_fusion_loop] reloc anchor kf=%d kf_t=%.3f image_t=%.3f dt=%.3fs\n",
-              anchor_kf->index, anchor_kf->time_stamp, image_time,
-              anchor_kf->time_stamp - image_time);
-  } else {
-    // 还没有关键帧：先按当前 drift 挂起，第一帧关键帧到来时在 addKeyFrame() 补绑
-    reloc_anchor_kf_index = -1;
-    reloc_anchor_r_drift = r_drift;
-    reloc_anchor_t_drift = t_drift;
-    MSF_WLOGF("[ms_fusion_loop] reloc anchor pending: no keyframe yet (image_t=%.3f)\n",
-              image_time);
-  }
-  has_reloc_anchor = true;
-  // 首次落地（check.has_anchor 为落地前状态）或手动触发：输出层平滑直接落地
-  if (!check.has_anchor || !check_jump) {
-    smooth_reset_pending = true;
-  }
-
-  // 锚点已落地（输出修正生效）
-  logPoseCorrection("reloc correction", current_t, current_R, target_t, target_R);
-  fflush(stdout);
-  check.applied = true;
-  last_reloc_apply_ns.store(loopMonotonicRawNowNs());
-  return check;
 }
 
 PoseGraph::~PoseGraph() {
@@ -442,14 +270,6 @@ void PoseGraph::addKeyFrame(KeyFrame *cur_kf, bool flag_detect_loop, LoopKeyfram
     w_r_vio = Eigen::Matrix3d::Identity();
     t_drift = Eigen::Vector3d(0, 0, 0);
     r_drift = Eigen::Matrix3d::Identity();
-    // 真正的后续新序列可能已重置 raw VIO 世界系，旧锚点不再有效。
-    // global_index==0 是程序启动后的第一帧；保留可能已由 transient-local
-    // 话题收到的锚点。下一次周期 reloc 会为后续新序列重建锚点。
-    if (global_index > 0) {
-      has_reloc_anchor = false;
-      // 新坐标系还没有有效 reloc，不能再按旧序列的落地时间推迟优化
-      last_reloc_apply_ns.store(-1);
-    }
     m_drift.unlock();
   }
 
@@ -462,17 +282,6 @@ void PoseGraph::addKeyFrame(KeyFrame *cur_kf, bool flag_detect_loop, LoopKeyfram
   cur_kf->updateVioPose(vio_P_cur, vio_R_cur);
   cur_kf->index = global_index;
   global_index++;
-  {
-    std::lock_guard<std::mutex> lock(m_drift);
-    if (has_reloc_anchor && reloc_anchor_kf_index < 0) {
-      // 锚点落地时还没有关键帧：绑定到第一帧关键帧，它稍后按当前 drift 写入位姿
-      reloc_anchor_kf_index = cur_kf->index;
-      reloc_anchor_r_drift = r_drift;
-      reloc_anchor_t_drift = t_drift;
-      MSF_ILOGF("[ms_fusion_loop] reloc anchor bound to first keyframe kf=%d kf_t=%.3f\n",
-                cur_kf->index, cur_kf->time_stamp);
-    }
-  }
   int loop_index = -1;
   std::vector<std::pair<int, float>> loop_candidates;
   if (flag_detect_loop) {
@@ -1001,26 +810,6 @@ void PoseGraph::addKeyFrameIntoVoc(KeyFrame *keyframe) {
   }
 }
 
-bool PoseGraph::isRelocFresh(double &reloc_age_s) const {
-  reloc_age_s = -1.0;
-  const double fresh_s = g_loop_config.defer_optimize_reloc_fresh_s;
-  const int64_t last_reloc_ns = last_reloc_apply_ns.load();
-  if (fresh_s <= 0.0 || last_reloc_ns < 0) {
-    return false;
-  }
-  reloc_age_s = static_cast<double>(loopMonotonicRawNowNs() - last_reloc_ns) * 1e-9;
-  return reloc_age_s < fresh_s;
-}
-
-void PoseGraph::deferOptimizeJob(const OptimizeJob &job, double reloc_age_s, const char *reason) {
-  pending_optimize_job = job;
-  if (!pending_optimize_deferred) {
-    MSF_ILOGF("[ms_fusion_loop] optimize deferred%s: reloc age=%.1fs < %.1fs, pending cur=%d\n",
-              reason, reloc_age_s, g_loop_config.defer_optimize_reloc_fresh_s, job.cur_index);
-    pending_optimize_deferred = true;
-  }
-}
-
 PoseGraph::OptimizeJob PoseGraph::takeOptimizeJob() {
   // 新请求先并入待优化任务（只保留最新的 cur，enqueue 时间保留最早的那条，
   // queue_wait 因而反映整批被推迟了多久），避免推迟期间请求堆积
@@ -1040,18 +829,6 @@ PoseGraph::OptimizeJob PoseGraph::takeOptimizeJob() {
     return OptimizeJob();
   }
 
-  // 最近一次 reloc 成功落地还新鲜时推迟优化：reloc 在负责拉回输出，锚点之前的
-  // 回环修正本来就会被锚点覆盖。回环边照常留在图里，reloc 过期后在下一个唤醒
-  // 周期（约 2s）补做，不依赖新的 LOOP CLOSED。
-  double reloc_age_s = -1.0;
-  if (isRelocFresh(reloc_age_s)) {
-    deferOptimizeJob(pending_optimize_job, reloc_age_s, "");
-    return OptimizeJob();
-  }
-  if (pending_optimize_deferred) {
-    MSF_ILOGF("[ms_fusion_loop] optimize resumed: reloc age=%.1fs, pending cur=%d requests=%d\n",
-              reloc_age_s, pending_optimize_job.cur_index, pending_optimize_job.dequeued_requests);
-  }
   pending_optimize_deferred = false;
   const OptimizeJob job = pending_optimize_job;
   pending_optimize_job = OptimizeJob();
@@ -1074,16 +851,6 @@ void PoseGraph::optimize4DoF() {
                 first_looped_index, cur_index);
       TicToc build_timer;
       m_keyframelist.lock();
-      // takeOptimizeJob() 判过期到这里之间 reloc 可能刚落地：applyRelocCorrection()
-      // 同样要拿 m_keyframelist，持锁后再查一次即可与落地互斥。已开始求解后才落地的
-      // reloc 不打断本轮。
-      double recheck_reloc_age_s = -1.0;
-      if (isRelocFresh(recheck_reloc_age_s)) {
-        deferOptimizeJob(job, recheck_reloc_age_s, " (reloc landed before build)");
-        m_keyframelist.unlock();
-        waitOptimizeInterval();
-        continue;
-      }
       KeyFrame *cur_kf = getKeyFrame(cur_index);
       if (cur_kf == nullptr) {
         MSF_ILOGF("[ms_fusion_loop] optimize 4DoF skipped: keyframe %d not in list yet\n", cur_index);
@@ -1265,7 +1032,6 @@ void PoseGraph::optimize4DoF() {
       yaw_drift = Utility::R2ypr(cur_r).x() - Utility::R2ypr(vio_r).x();
       r_drift = Utility::ypr2R(Vector3d(yaw_drift, 0, 0));
       t_drift = cur_t - r_drift * vio_t;
-      updateRelocAnchorDriftLocked(cur_index);
       computeOutputFromVioLocked(log_vio_t, log_vio_R, log_target_t, log_target_R);
       m_drift.unlock();
 
@@ -1321,16 +1087,6 @@ void PoseGraph::optimize6DoF() {
                 first_looped_index, cur_index);
       TicToc build_timer;
       m_keyframelist.lock();
-      // takeOptimizeJob() 判过期到这里之间 reloc 可能刚落地：applyRelocCorrection()
-      // 同样要拿 m_keyframelist，持锁后再查一次即可与落地互斥。已开始求解后才落地的
-      // reloc 不打断本轮。
-      double recheck_reloc_age_s = -1.0;
-      if (isRelocFresh(recheck_reloc_age_s)) {
-        deferOptimizeJob(job, recheck_reloc_age_s, " (reloc landed before build)");
-        m_keyframelist.unlock();
-        waitOptimizeInterval();
-        continue;
-      }
       KeyFrame *cur_kf = getKeyFrame(cur_index);
       if (cur_kf == nullptr) {
         MSF_ILOGF("[ms_fusion_loop] optimize 6DoF skipped: keyframe %d not in list yet\n", cur_index);
@@ -1481,7 +1237,6 @@ void PoseGraph::optimize6DoF() {
       computeOutputFromVioLocked(log_vio_t, log_vio_R, log_current_t, log_current_R);
       r_drift = cur_r * vio_r.transpose();
       t_drift = cur_t - r_drift * vio_t;
-      updateRelocAnchorDriftLocked(cur_index);
       computeOutputFromVioLocked(log_vio_t, log_vio_R, log_target_t, log_target_R);
       m_drift.unlock();
 

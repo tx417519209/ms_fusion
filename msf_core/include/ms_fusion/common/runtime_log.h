@@ -167,7 +167,7 @@ void logPrintf(LogSeverity severity, const char* file, int line, const char* for
 #define MSF_ELOGF(...) \
     ms_fusion::logPrintf(ms_fusion::LogSeverity::ERROR, __FILE__, __LINE__, __VA_ARGS__)
 
-// 终端整行着色，只用于少数需要一眼认出的结果（reloc 修正被应用 / 被门控拒绝）。
+// 终端整行着色，只用于少数需要一眼认出的结果。
 // 用法：MSF_ILOG << kLogGreen << "..." << kLogColorReset << std::endl;
 // grep/sed 按子串匹配不受首尾转义序列影响
 inline constexpr const char* kLogGreen = "\033[1;32m";

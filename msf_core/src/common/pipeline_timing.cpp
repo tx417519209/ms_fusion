@@ -157,55 +157,6 @@ struct FrontendAccum {
     double producer_dropped = 0.0;
 };
 
-struct RelocAccum {
-    size_t runs = 0;
-    size_t success = 0;
-    size_t refine_attempts = 0;
-    size_t refine_success = 0;
-    Bucket input_source;
-    Bucket queue_wait;
-    Bucket ivps_grab;
-    Bucket ivps_convert;
-    Bucket ivps_release;
-    Bucket resize;
-    Bucket undistort;
-    Bucket yolo_pre;
-    Bucket yolo_infer;
-    Bucket yolo_post;
-    Bucket yolo_total;
-    Bucket yolo_other;
-    Bucket debug_publish;
-    Bucket feature_pack;
-    Bucket correspondence;
-    Bucket ransac;
-    Bucket refine;
-    Bucket validate;
-    Bucket pose_total;
-    Bucket pose_other;
-    Bucket process;
-    Bucket process_other;
-    Bucket total;
-    Bucket other;
-    Bucket detections_left;
-    Bucket detections_right;
-    Bucket lines_left;
-    Bucket lines_right;
-    Bucket keypoints_left;
-    Bucket keypoints_right;
-    Bucket unique_landmarks;
-    Bucket raw_observations;
-    Bucket valid_observations;
-    Bucket ransac_inliers;
-    Bucket inlier_landmarks;
-    Bucket ransac_iterations;
-    Bucket refine_iterations;
-    Bucket refine_residuals;
-    // 最终采用位姿（refine 通过用 refine 结果，否则回退 RANSAC 结果）的精度
-    // 诊断：平均反投影误差（像素）+ 位置/yaw，只统计 pose_success 的帧
-    Bucket avg_reprojection_error_px;
-    SignedBucket pose_x, pose_y, pose_z;
-    AngleBucket pose_yaw_deg;
-};
 
 struct BackendAccum {
     size_t attempts = 0;
@@ -287,8 +238,6 @@ struct BackendAccum {
     Bucket parallax_keyframe;
     Bucket triangulate;
     Bucket preintegration;
-    Bucket reloc_align;
-    Bucket reloc_align_keyframe;
     Bucket optimize;
     Bucket optimize_build;
     Bucket optimize_solve;
@@ -337,7 +286,6 @@ struct MatchedCloudAccum {
 
 std::mutex g_timing_mutex;
 FrontendAccum g_frontend;
-RelocAccum g_reloc;
 BackendAccum g_backend;
 MatchedCloudAccum g_matched;
 MonotonicRawClock::time_point g_window_begin{};
@@ -426,7 +374,6 @@ double sumValid(std::initializer_list<double> values) {
 
 void resetAll() {
     g_frontend = FrontendAccum{};
-    g_reloc = RelocAccum{};
     g_backend = BackendAccum{};
     g_matched = MatchedCloudAccum{};
 }
@@ -656,137 +603,6 @@ void reportFrontend(std::ostringstream& output, double elapsed_s, double window_
     }
 }
 
-void reportReloc(std::ostringstream& output, double elapsed_s, double window_ms) {
-    if (g_reloc.runs == 0) {
-        return;
-    }
-
-    const double hz = static_cast<double>(g_reloc.runs) / elapsed_s;
-    {
-        std::ostringstream body;
-        bool first = true;
-        appendMs(body, first, "total", g_reloc.total.avg());
-        appendMs(body, first, "source", g_reloc.input_source.avg());
-        appendMs(body, first, "queue", g_reloc.queue_wait.avg());
-        appendMs(body, first, "resize", g_reloc.resize.avg());
-        appendMs(body, first, "process", g_reloc.process.avg());
-        appendMs(body, first, "other", g_reloc.other.avg());
-        appendCount(body, first, "ok", g_reloc.success);
-        appendCount(body, first, "runs", g_reloc.runs);
-        appendNum(body, first, "hz", hz);
-        appendMs(body, first, "window", window_ms);
-        line(output, "reloc", 0, "SCORE", body.str());
-    }
-
-    {
-        std::ostringstream body;
-        bool first = true;
-        const double ivps_total = sumValid(
-            {g_reloc.ivps_grab.avg(), g_reloc.ivps_convert.avg(), g_reloc.ivps_release.avg()});
-        appendMs(body, first, "ivps", ivps_total);
-        appendMs(body, first, "grab", g_reloc.ivps_grab.avg());
-        appendMs(body, first, "convert", g_reloc.ivps_convert.avg());
-        appendMs(body, first, "release", g_reloc.ivps_release.avg());
-        line(output, "reloc", 1, "ivps_diag", body.str());
-    }
-
-    {
-        std::ostringstream body;
-        bool first = true;
-        appendMs(body, first, "total", g_reloc.process.avg());
-        appendMs(body, first, "undist", g_reloc.undistort.avg());
-        appendMs(body, first, "yolo", g_reloc.yolo_total.avg());
-        appendMs(body, first, "debug", g_reloc.debug_publish.avg());
-        appendMs(body, first, "feat", g_reloc.feature_pack.avg());
-        appendMs(body, first, "pose", g_reloc.pose_total.avg());
-        appendMs(body, first, "other", g_reloc.process_other.avg());
-        line(output, "reloc", 1, "process", body.str());
-    }
-
-    {
-        std::ostringstream body;
-        bool first = true;
-        appendMs(body, first, "total", g_reloc.yolo_total.avg());
-        appendMs(body, first, "pre", g_reloc.yolo_pre.avg());
-        appendMs(body, first, "run_sdk", g_reloc.yolo_infer.avg());
-        appendMs(body, first, "geom_post", g_reloc.yolo_post.avg());
-        appendMs(body, first, "other", g_reloc.yolo_other.avg());
-        line(output, "reloc", 2, "yolo", body.str());
-    }
-
-    {
-        std::ostringstream body;
-        bool first = true;
-        appendMs(body, first, "total", g_reloc.pose_total.avg());
-        appendMs(body, first, "corr", g_reloc.correspondence.avg());
-        appendMs(body, first, "ransac", g_reloc.ransac.avg());
-        appendMs(body, first, "refine", g_reloc.refine.avg());
-        appendMs(body, first, "validate", g_reloc.validate.avg());
-        appendMs(body, first, "other", g_reloc.pose_other.avg());
-        appendNum(body, first, "ransac_iter", g_reloc.ransac_iterations.avg());
-        appendNum(body, first, "refine_iter", g_reloc.refine_iterations.avg());
-        appendNum(body, first, "refine_res", g_reloc.refine_residuals.avg());
-        appendCount(body, first, "refine_ok", g_reloc.refine_success);
-        appendCount(body, first, "refine_try", g_reloc.refine_attempts);
-        line(output, "reloc", 2, "pose", body.str());
-    }
-
-    {
-        // 最终采用位姿（pose_success 帧）的精度诊断：反投影误差是唯一能独立
-        // 评估重定位准确度的量（不依赖真值）；position/yaw 没有真值对照，但
-        // 静止时反复重定位的输出可以互相对照，看抖动/离散程度。
-        std::ostringstream body;
-        bool first = true;
-        // 反投影误差不会是负数，appendNum 的非负过滤对它没问题；position/yaw
-        // 可正可负（yaw 走圆周平均），要用 formatSigned，不能走 appendNum。
-        appendNum(body, first, "reproj_err_px", g_reloc.avg_reprojection_error_px.avg(), 2);
-        if (g_reloc.pose_x.has()) {
-            if (!first) {
-                body << "  ";
-            }
-            first = false;
-            body << "pos=[" << formatSigned(g_reloc.pose_x.avg(), 3) << ", "
-                 << formatSigned(g_reloc.pose_y.avg(), 3) << ", "
-                 << formatSigned(g_reloc.pose_z.avg(), 3) << "]";
-        }
-        if (g_reloc.pose_yaw_deg.has()) {
-            if (!first) {
-                body << "  ";
-            }
-            first = false;
-            body << "yaw=" << formatSigned(g_reloc.pose_yaw_deg.avg(), 2);
-        }
-        if (!first) {
-            line(output, "reloc", 2, "accuracy", body.str());
-        }
-    }
-
-    {
-        std::ostringstream body;
-        bool first = true;
-        appendNum(body, first, "det_l", g_reloc.detections_left.avg());
-        appendNum(body, first, "det_r", g_reloc.detections_right.avg());
-        appendNum(body, first, "line_l", g_reloc.lines_left.avg());
-        appendNum(body, first, "line_r", g_reloc.lines_right.avg());
-        appendNum(body, first, "kp_l", g_reloc.keypoints_left.avg());
-        appendNum(body, first, "kp_r", g_reloc.keypoints_right.avg());
-        line(output, "reloc", 2, "detect", body.str());
-    }
-
-    {
-        std::ostringstream body;
-        bool first = true;
-        appendNum(body, first, "landmarks", g_reloc.unique_landmarks.avg());
-        appendNum(body, first, "obs_raw", g_reloc.raw_observations.avg());
-        appendNum(body, first, "obs_valid", g_reloc.valid_observations.avg());
-        appendNum(body, first, "inliers", g_reloc.ransac_inliers.avg());
-        appendNum(body, first, "inlier_lm", g_reloc.inlier_landmarks.avg());
-        appendMs(body, first, "pack", g_reloc.feature_pack.avg());
-        appendMs(body, first, "debug", g_reloc.debug_publish.avg());
-        line(output, "reloc", 2, "feat", body.str());
-    }
-}
-
 void reportBackend(std::ostringstream& output, double elapsed_s, double window_ms) {
     if (g_backend.attempts == 0 && g_backend.init_attempts == 0) {
         return;
@@ -802,7 +618,6 @@ void reportBackend(std::ostringstream& output, double elapsed_s, double window_m
             bool first = true;
             appendMs(body, first, "total", g_backend.total.avg());
             appendMs(body, first, "prep", prep);
-            appendMs(body, first, "reloc", g_backend.reloc_align_keyframe.avg());
             appendMs(body, first, "opt", g_backend.optimize.avg());
             appendMs(body, first, "marg", g_backend.marginalize_contribution.avg());
             appendMs(body, first, "loop_pub", g_backend.loop_contribution.avg());
@@ -825,7 +640,6 @@ void reportBackend(std::ostringstream& output, double elapsed_s, double window_m
             bool first = true;
             appendMs(body, first, "wait_outside", g_backend.queue_wait_all.avg());
             appendMs(body, first, "parallax", g_backend.parallax_all.avg());
-            appendMs(body, first, "reloc_when_run", g_backend.reloc_align.avg());
             appendMs(body, first, "odom_pub_all", g_backend.estimated_odom_publish_all.avg());
             appendMs(body, first, "reject_total", g_backend.rejected_total.avg());
             appendNum(body, first, "input_feat", g_backend.input_features_all.avg());
@@ -1049,16 +863,12 @@ void reportBackend(std::ostringstream& output, double elapsed_s, double window_m
     }
 }
 
-// 初始化（bootstrap）阶段的简洁摘要：只给一行，不展开 frontend/backend/reloc
-// 的多行明细。frames/tracking_skipped/producer_dropped 来自 frontend 侧的
-// 软门控诊断字段（见 FrameFrontendTiming），reloc_ok 是这个窗口里 checkPose
-// 通过的 reloc 候选数（RelocAccum::success）。
+// 初始化阶段的简洁摘要。
 void reportBootstrap(std::ostringstream& output, double window_ms) {
-    if (g_frontend.frames == 0 && g_reloc.runs == 0) {
+    if (g_frontend.frames == 0) {
         return;
     }
-    output << "[bootstrap] frames=" << g_frontend.frames << "  reloc_ok=" << g_reloc.success
-           << "  tracking_skipped="
+    output << "[bootstrap] frames=" << g_frontend.frames << "  tracking_skipped="
            << static_cast<size_t>(std::max(0.0, g_frontend.bootstrap_skip_tracking))
            << "  producer_dropped="
            << static_cast<size_t>(std::max(0.0, g_frontend.producer_dropped))
@@ -1094,7 +904,6 @@ void maybeFlushLocked() {
         reportBootstrap(output, window_ms);
     } else {
         reportFrontend(output, elapsed_s, window_ms);
-        reportReloc(output, elapsed_s, window_ms);
         reportBackend(output, elapsed_s, window_ms);
     }
 
@@ -1125,9 +934,7 @@ void PipelineTiming::recordFrontend(const FrameFrontendTiming& t) {
         return;
     }
     std::lock_guard<std::mutex> lock(g_timing_mutex);
-    // Close the elapsed window before inserting the current sample.  Reloc and
-    // frontend are recorded back-to-back for the same camera frame; flushing
-    // after insertion could otherwise split that pair across two windows.
+    // Close the elapsed window before inserting the current sample.
     maybeFlushLocked();
 
     ++g_frontend.frames;
@@ -1277,110 +1084,6 @@ void PipelineTiming::recordFrontend(const FrameFrontendTiming& t) {
     }
 }
 
-void PipelineTiming::recordReloc(const FrameRelocTiming& t) {
-    if (!RuntimeLog::enableTimingStats()) {
-        return;
-    }
-    std::lock_guard<std::mutex> lock(g_timing_mutex);
-    maybeFlushLocked();
-
-    // Reloc rows are CPU contribution per reloc attempt. Optional stages use
-    // zero (rather than disappearing from the average), so process ~= children
-    // + other even when undistortion/RANSAC/refinement did not run.
-    const auto contribution = [](double value) { return valid(value) ? value : 0.0; };
-
-    ++g_reloc.runs;
-    if (t.pose_success > 0.5) {
-        ++g_reloc.success;
-    }
-    if (t.refine_success >= 0.0) {
-        ++g_reloc.refine_attempts;
-        if (t.refine_success > 0.5) {
-            ++g_reloc.refine_success;
-        }
-    }
-    // 只在 pose_success 时统计：avg_reprojection_error_px/pose_* 在失败帧里是
-    // 未填充的哨兵值（-1 / -1e9），AngleBucket 不会像 Bucket/SignedBucket 那样
-    // 自动过滤，必须在这里显式挡住。
-    if (t.pose_success > 0.5) {
-        g_reloc.avg_reprojection_error_px.add(t.avg_reprojection_error_px);
-        g_reloc.pose_x.add(t.pose_x);
-        g_reloc.pose_y.add(t.pose_y);
-        g_reloc.pose_z.add(t.pose_z);
-        g_reloc.pose_yaw_deg.add(t.pose_yaw_deg);
-    }
-    g_reloc.input_source.add(t.input_source_ms);
-    g_reloc.queue_wait.add(t.input_queue_wait_ms);
-    g_reloc.ivps_grab.add(contribution(t.ivps_grab_ms));
-    g_reloc.ivps_convert.add(contribution(t.ivps_convert_ms));
-    g_reloc.ivps_release.add(contribution(t.ivps_release_ms));
-    g_reloc.resize.add(t.resize_ms);
-    g_reloc.undistort.add(contribution(t.undistort_ms));
-    g_reloc.yolo_pre.add(contribution(t.yolo_preprocess_ms));
-    g_reloc.yolo_infer.add(contribution(t.yolo_infer_ms));
-    g_reloc.yolo_post.add(contribution(t.yolo_post_ms));
-    const double yolo_total = contribution(t.yolo_total_ms);
-    g_reloc.yolo_total.add(yolo_total);
-    {
-        const double accounted =
-            contribution(t.yolo_preprocess_ms) + contribution(t.yolo_infer_ms) +
-            contribution(t.yolo_post_ms);
-        const double other = yolo_total - accounted;
-        if (other >= 0.0) {
-            g_reloc.yolo_other.add(other);
-        }
-    }
-    g_reloc.debug_publish.add(contribution(t.debug_publish_ms));
-    g_reloc.feature_pack.add(contribution(t.feature_pack_ms));
-    g_reloc.correspondence.add(contribution(t.correspondence_ms));
-    g_reloc.ransac.add(contribution(t.ransac_ms));
-    g_reloc.refine.add(contribution(t.refine_ms));
-    g_reloc.validate.add(contribution(t.validate_ms));
-    const double pose_total = contribution(t.pose_total_ms);
-    g_reloc.pose_total.add(pose_total);
-    {
-        const double accounted = contribution(t.correspondence_ms) +
-                                 contribution(t.ransac_ms) + contribution(t.refine_ms) +
-                                 contribution(t.validate_ms);
-        const double other = pose_total - accounted;
-        if (other >= 0.0) {
-            g_reloc.pose_other.add(other);
-        }
-    }
-    g_reloc.process.add(t.process_ms);
-    if (valid(t.process_ms)) {
-        const double accounted = contribution(t.undistort_ms) + yolo_total +
-                                 contribution(t.debug_publish_ms) +
-                                 contribution(t.feature_pack_ms) + pose_total;
-        const double other = t.process_ms - accounted;
-        if (other >= 0.0) {
-            g_reloc.process_other.add(other);
-        }
-    }
-    g_reloc.total.add(t.total_ms);
-    if (valid(t.total_ms)) {
-        const double accounted = sumValid(
-            {t.input_source_ms, t.input_queue_wait_ms, t.resize_ms, t.process_ms});
-        if (valid(accounted) && t.total_ms - accounted >= 0.0) {
-            g_reloc.other.add(t.total_ms - accounted);
-        }
-    }
-    g_reloc.detections_left.add(contribution(t.detections_left));
-    g_reloc.detections_right.add(contribution(t.detections_right));
-    g_reloc.lines_left.add(contribution(t.lines_left));
-    g_reloc.lines_right.add(contribution(t.lines_right));
-    g_reloc.keypoints_left.add(contribution(t.keypoints_left));
-    g_reloc.keypoints_right.add(contribution(t.keypoints_right));
-    g_reloc.unique_landmarks.add(contribution(t.unique_landmarks));
-    g_reloc.raw_observations.add(contribution(t.raw_observations));
-    g_reloc.valid_observations.add(contribution(t.valid_observations));
-    g_reloc.ransac_inliers.add(contribution(t.ransac_inliers));
-    g_reloc.inlier_landmarks.add(contribution(t.inlier_landmarks));
-    g_reloc.ransac_iterations.add(contribution(t.ransac_iterations));
-    g_reloc.refine_iterations.add(contribution(t.refine_iterations));
-    g_reloc.refine_residuals.add(contribution(t.refine_residuals));
-}
-
 void PipelineTiming::recordBackend(const FrameBackendTiming& t) {
     if (!RuntimeLog::enableTimingStats()) {
         return;
@@ -1468,7 +1171,7 @@ void PipelineTiming::recordBackend(const FrameBackendTiming& t) {
     g_backend.total.add(t.total_ms);
     if (valid(t.total_ms)) {
         const double accounted = sumValid({
-            t.feature_parallax_ms, t.triangulate_ms, t.preintegration_ms, t.reloc_align_ms,
+            t.feature_parallax_ms, t.triangulate_ms, t.preintegration_ms,
             t.optimize_ms, t.marginalize_ms, t.loop_closure_publish_total_ms,
             t.metrics_ms, t.estimated_odom_publish_ms});
         if (valid(accounted) && t.total_ms - accounted >= 0.0) {
@@ -1478,8 +1181,6 @@ void PipelineTiming::recordBackend(const FrameBackendTiming& t) {
     g_backend.parallax_keyframe.add(t.feature_parallax_ms);
     g_backend.triangulate.add(t.triangulate_ms);
     g_backend.preintegration.add(t.preintegration_ms);
-    g_backend.reloc_align.add(t.reloc_align_ms);
-    g_backend.reloc_align_keyframe.add(valid(t.reloc_align_ms) ? t.reloc_align_ms : 0.0);
     g_backend.optimize.add(t.optimize_ms);
     g_backend.optimize_build.add(t.optimize_build_ms);
     g_backend.optimize_solve.add(t.optimize_solve_ms);
@@ -1560,7 +1261,6 @@ void PipelineTiming::recordBackendRejected(const FrameBackendTiming& t) {
     g_backend.rot_comp_decision_parallax_px_all.add(t.rot_comp_decision_parallax_px);
     g_backend.rot_comp_decision_parallax_tracks_all.add(t.rot_comp_decision_parallax_tracks);
     g_backend.rejected_total.add(t.total_ms);
-    g_backend.reloc_align.add(t.reloc_align_ms);
     g_backend.estimated_odom_publish_all.add(t.estimated_odom_publish_ms);
 }
 

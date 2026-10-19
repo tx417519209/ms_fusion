@@ -81,20 +81,11 @@ bool loadLoopParameters(const std::string &config_file) {
     cfg.keyframe_descriptors_topic = loop["keyframe_descriptors_topic"]
                                          ? loop["keyframe_descriptors_topic"].as<std::string>()
                                          : "ms_fusion/keyframe_descriptors";
-    cfg.reloc_correction_topic = loop["reloc_correction_topic"]
-                                     ? loop["reloc_correction_topic"].as<std::string>()
-                                     : "ms_fusion/reloc_correction";
-    cfg.max_correction_position_m = loop["max_correction_position_m"]
-                                         ? loop["max_correction_position_m"].as<double>()
-                                         : 1.5;
     cfg.output_smooth_tau_s =
         loop["output_smooth_tau_s"] ? loop["output_smooth_tau_s"].as<double>() : 0.0;
     if (!std::isfinite(cfg.output_smooth_tau_s) || cfg.output_smooth_tau_s < 0.0) {
       throw std::runtime_error("loop output_smooth_tau_s must be finite and >= 0");
     }
-    cfg.max_correction_yaw_deg = loop["max_correction_yaw_deg"]
-                                      ? loop["max_correction_yaw_deg"].as<double>()
-                                      : 5.0;
     const YAML::Node base = root["base"] ? root["base"] : YAML::Node();
     cfg.raw_odometry_topic = loop["raw_odometry_topic"]
                                  ? loop["raw_odometry_topic"].as<std::string>()
@@ -121,9 +112,8 @@ bool loadLoopParameters(const std::string &config_file) {
     cfg.odometry_rect_qos_depth = loop["odometry_rect_qos_depth"]
                                       ? loop["odometry_rect_qos_depth"].as<int>()
                                       : 10;
-    if (cfg.raw_odometry_topic.empty() || cfg.odometry_rect_topic.empty() ||
-        cfg.reloc_correction_topic.empty()) {
-      throw std::runtime_error("loop odometry and reloc correction topics must not be empty");
+    if (cfg.raw_odometry_topic.empty() || cfg.odometry_rect_topic.empty()) {
+      throw std::runtime_error("loop odometry topics must not be empty");
     }
     if (cfg.odometry_sub_qos_depth < 1 || cfg.odometry_rect_qos_depth < 1) {
       throw std::runtime_error("loop odometry QoS depths must be >= 1");
@@ -259,12 +249,6 @@ bool loadLoopParameters(const std::string &config_file) {
     cfg.loop_max_verified_candidates = loop["loop_max_verified_candidates"]
                                             ? loop["loop_max_verified_candidates"].as<int>()
                                             : 0;
-    if (loop["loop_defer_optimize_reloc_fresh_s"]) {
-      cfg.defer_optimize_reloc_fresh_s = loop["loop_defer_optimize_reloc_fresh_s"].as<double>();
-    } else if (root["reloc"] && root["reloc"]["periodic_reloc_period_s"]) {
-      cfg.defer_optimize_reloc_fresh_s =
-          2.0 * root["reloc"]["periodic_reloc_period_s"].as<double>();
-    }
     if (root["camera"] && root["camera"]["cam0"]) {
       const YAML::Node cam0 = root["camera"]["cam0"];
       if (cam0["resolution"] && cam0["resolution"].IsSequence() && cam0["resolution"].size() >= 2) {
@@ -368,14 +352,6 @@ bool loadLoopParameters(const std::string &config_file) {
              << " fy=" << cfg.fy << " cx=" << cfg.cx << " cy=" << cfg.cy << std::endl;
     MSF_ILOG << "[ms_fusion_loop] voc: " << cfg.voc_path << std::endl;
     MSF_ILOG << "[ms_fusion_loop] pose_graph_save_path: " << POSE_GRAPH_SAVE_PATH << std::endl;
-    MSF_ILOG << "[ms_fusion_loop] reloc_correction_topic: " << cfg.reloc_correction_topic
-             << std::endl;
-    MSF_ILOG << "[ms_fusion_loop] max_correction_position_m: "
-             << cfg.max_correction_position_m
-             << (cfg.max_correction_position_m > 0.0 ? "" : " (disabled)") << std::endl;
-    MSF_ILOG << "[ms_fusion_loop] max_correction_yaw_deg: "
-             << cfg.max_correction_yaw_deg
-             << (cfg.max_correction_yaw_deg > 0.0 ? "" : " (disabled)") << std::endl;
     MSF_ILOG << "[ms_fusion_loop] output_smooth_tau_s: " << cfg.output_smooth_tau_s
              << (cfg.output_smooth_tau_s > 0.0 ? "" : " (disabled)") << std::endl;
     MSF_ILOG << "[ms_fusion_loop] graph_loop: split_residual="

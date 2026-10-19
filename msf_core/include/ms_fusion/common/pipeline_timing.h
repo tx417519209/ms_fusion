@@ -67,59 +67,11 @@ struct FrameFrontendTiming {
     double npu_calls = -1;
     double image_queue_size = -1;
     double image_queue_dropped = -1;  // frames discarded this cycle for realtime catch-up
-    // Reloc bootstrap observability.  bootstrap_skip_tracking is 0/1 for this
-    // processed frame; producer_dropped is the number discarded before enqueue
-    // while the vision consumer was unavailable.
+    // Bootstrap observability. bootstrap_skip_tracking is 0/1 for this frame.
     double bootstrap_skip_tracking = -1;
     double producer_dropped = -1;
 };
 
-// Reloc runs only when initialization or the on-demand service requests YOLO.
-struct FrameRelocTiming {
-    double input_source_ms = -1;
-    double input_queue_wait_ms = -1;
-    double ivps_grab_ms = -1;
-    double ivps_convert_ms = -1;
-    double ivps_release_ms = -1;
-    double resize_ms = -1;
-    double undistort_ms = -1;
-    double yolo_preprocess_ms = -1;
-    double yolo_infer_ms = -1;   // infer_api run: AX inference + SDK decode/NMS
-    double yolo_post_ms = -1;    // ms_fusion OBB -> line/keypoint geometry
-    double yolo_total_ms = -1;
-    double debug_publish_ms = -1;
-    double feature_pack_ms = -1;
-    double correspondence_ms = -1;
-    double ransac_ms = -1;
-    double refine_ms = -1;
-    double validate_ms = -1;
-    double pose_total_ms = -1;
-    double process_ms = -1;  // ReLoc::process + result copy, excluding resize
-    double total_ms = -1;    // source callback begin -> reloc result ready
-
-    double detections_left = -1;
-    double detections_right = -1;
-    double lines_left = -1;
-    double lines_right = -1;
-    double keypoints_left = -1;
-    double keypoints_right = -1;
-    double unique_landmarks = -1;
-    double raw_observations = -1;
-    double valid_observations = -1;
-    double ransac_inliers = -1;
-    double inlier_landmarks = -1;
-    double ransac_iterations = -1;
-    double refine_iterations = -1;
-    double refine_residuals = -1;
-    double pose_success = -1;    // 0/1
-    double refine_success = -1;  // 0/1; -1 when refinement was not attempted
-
-    // 最终采用位姿（refine 通过用 refine 结果，否则回退 RANSAC 结果）的精度
-    // 诊断，只在 pose_success=1 时有效：平均反投影误差（像素）+ 位置/yaw。
-    double avg_reprojection_error_px = -1;
-    double pose_x = -1e9, pose_y = -1e9, pose_z = -1e9;
-    double pose_yaw_deg = -1e9;
-};
 
 // Per-accepted-keyframe backend breakdown. Rejected vision frames are recorded
 // separately so keyframe-only averages never mix different sample populations.
@@ -204,7 +156,6 @@ struct FrameBackendTiming {
     double vision_noise_px = -1;
     double triangulate_ms = -1;
     double preintegration_ms = -1;
-    double reloc_align_ms = -1;  // on-demand absolute-pose alignment; -1 when not requested
     double optimize_ms = -1;
     double optimize_build_ms = -1;
     double optimize_solve_ms = -1;
@@ -252,7 +203,6 @@ struct BackendInitTiming {
 class PipelineTiming {
 public:
     static void recordFrontend(const FrameFrontendTiming& timing);
-    static void recordReloc(const FrameRelocTiming& timing);
     static void recordBackend(const FrameBackendTiming& timing);
     static void recordBackendRejected(const FrameBackendTiming& timing);
     static void recordBackendInit(const BackendInitTiming& timing);
@@ -261,9 +211,7 @@ public:
 
     // 初始化（bootstrap）阶段开关。开启时（默认就是开启，因为进程总是从
     // INITIALIZING 起步）：底层还是照常按帧记录 timing 样本，只是每个窗口
-    // flush 时只打印一行简洁摘要（frames/reloc_ok/tracking_skipped/
-    // producer_dropped），不打印完整的 frontend/backend/reloc 多行报表——
-    // 避免初始化阶段每秒十几行 timing 报表打断逐帧的 [Reloc] 结果。
+    // flush 时只打印一行简洁摘要，不打印完整的 frontend/backend 多行报表。
     // 状态切到 INIT_OPTIMIZING 时调用一次 setBootstrapPhase(false)：关闭
     // 简洁模式，并清空当前窗口累计值、重新开始计时，避免 bootstrap 期间的
     // 样本混进运行期第一份完整报表。

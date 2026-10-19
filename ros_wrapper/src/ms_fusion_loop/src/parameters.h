@@ -15,21 +15,10 @@ struct LoopConfig {
   std::string keyframe_pose_topic;
   std::string keyframe_point_topic;
   std::string keyframe_descriptors_topic;
-  std::string reloc_correction_topic = "ms_fusion/reloc_correction";
-  // 输出跳变验收（见 PoseGraph::applyRelocCorrection）：current（已叠加历史
-  // 修正的实际输出）→target 的跳变超过任一上限时不落地，锚点不更新。<=0 表示
-  // 不启用。has_reloc_anchor==false（启动后第一次落地的修正）或触发来源是
-  // /reloc 手动触发时跳过这项检查。
-  // 这两个字段同时被 msf_core 的 MsFusionManager::applyRelocCorrectionLocked
-  // 复用（use_loop_route==false 的直接硬对齐路径），语义等价：两边比较的都是
-  // "没有额外未回写修正"的当前最终状态，故不在 msf_core 侧单独维护一份。
-  // 初始值参照 2026-09-16 现场日志定的，先用这个跑几轮现场测试再调。
-  double max_correction_position_m = 1.5;
-  double max_correction_yaw_deg = 5.0;
-  // 输出层平滑（默认关闭）：reloc 落地或位姿图优化使输出位姿阶跃时，吸收这次阶跃
+  // 输出层平滑（默认关闭）：位姿图优化使输出位姿阶跃时，吸收这次阶跃
   // 并让残差按 exp(-dt/tau) 衰减（dt 取 /odometry_vio 的消息时间戳）。tau 单位秒，
   // 0 表示关闭，输出与未平滑完全一致。只作用于发布的 /odometry；跳变验收、ACK、
-  // 锚点、位姿图都仍用未平滑位姿。启动后第一次 reloc 落地和 /reloc 手动触发不平滑。
+  // 位姿图仍使用未平滑位姿。
   double output_smooth_tau_s = 0.0;
   std::string raw_odometry_topic;
   std::string odometry_sub_qos = "best_effort";
@@ -124,11 +113,6 @@ struct LoopConfig {
   // 证这么多个。<=0 表示不限制（验证 dbow_max_candidates 个里所有未被冷却过滤
   // 掉的）。
   int loop_max_verified_candidates = 0;
-  // 最近一次 reloc 成功落地距今不足这么多秒时推迟位姿图优化（回环检测、加边、
-  // 冷却照常），reloc 过期后优化线程在下一个唤醒周期主动补做。yaml 不写
-  // loop_defer_optimize_reloc_fresh_s 时默认 2 × reloc.periodic_reloc_period_s；
-  // <=0 不推迟。
-  double defer_optimize_reloc_fresh_s = 0.0;
   int image_width;
   int image_height;
   Eigen::Vector3d tic;

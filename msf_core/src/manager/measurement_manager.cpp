@@ -9,8 +9,6 @@
 #include "ms_fusion/common/runtime_log.h"
 #include "ms_fusion/common/pipeline_timing.h"
 #include "ms_fusion/vision/tracking.h"
-#include "ms_fusion/vision/reloc.h"
-#include "ms_fusion/vision/yolo_obb.h"
 
 #include <tbb/tbb.h>
 #include <opencv2/opencv.hpp>
@@ -56,52 +54,6 @@ std::vector<std::shared_ptr<GenericCamera>> createScaledCameras(
     return cameras;
 }
 
-void resizeRelocImages(const cv::Mat& image0, const cv::Mat& image1, int reloc_width,
-                       int reloc_height, cv::Mat& reloc_image0, cv::Mat& reloc_image1) {
-    const cv::Size reloc_size(reloc_width, reloc_height);
-    static std::array<cv::Size, 2> last_warned_input_sizes = {
-        cv::Size(-1, -1), cv::Size(-1, -1)};
-    auto resize_top_left_padded = [&](const cv::Mat& source, cv::Mat& destination,
-                                      size_t camera_index) {
-        if (source.empty()) {
-            if (last_warned_input_sizes.at(camera_index) != source.size()) {
-                MSF_CLOG << "[Reloc] WARNING: cam" << camera_index
-                         << " input is empty; rejecting reloc frame" << std::endl;
-                last_warned_input_sizes.at(camera_index) = source.size();
-            }
-            destination.release();
-            return;
-        }
-        if (source.size() == reloc_size) {
-            // IVPS 正常路径：仅复制 cv::Mat 头，不做 resize、padding 或像素拷贝。
-            destination = source;
-            return;
-        }
-
-        const auto geometry = makeTopLeftPaddedImageGeometry(
-            source.cols, source.rows, reloc_width, reloc_height);
-        cv::Mat resized;
-        cv::resize(source, resized,
-                   cv::Size(geometry.content_width, geometry.content_height), 0.0, 0.0,
-                   cv::INTER_LINEAR);
-        if (last_warned_input_sizes.at(camera_index) != source.size()) {
-            MSF_CLOG << "[Reloc] WARNING: cam" << camera_index << " IVPS input="
-                     << source.cols << "x" << source.rows << ", expected=" << reloc_width
-                     << "x" << reloc_height
-                     << "; using top-left software resize/pad fallback content="
-                     << geometry.content_width << "x" << geometry.content_height
-                     << " pad=[right=" << geometry.pad_right
-                     << ", bottom=" << geometry.pad_bottom << "]" << std::endl;
-            last_warned_input_sizes.at(camera_index) = source.size();
-        }
-        cv::copyMakeBorder(resized, destination, 0, geometry.pad_bottom, 0,
-                           geometry.pad_right, cv::BORDER_CONSTANT, cv::Scalar::all(0));
-    };
-
-    resize_top_left_padded(image0, reloc_image0, 0);
-    resize_top_left_padded(image1, reloc_image1, 1);
-}
-
 void logImageResolutionIfChanged(const cv::Mat& image0_mat, const cv::Mat& image1_mat,
                                  const ImageMessage& image_message,
                                  const MsFusionConfigParams& config_params) {
@@ -133,22 +85,6 @@ void logImageResolutionIfChanged(const cv::Mat& image0_mat, const cv::Mat& image
     }
 
     MSF_ILOG << "[Image] resolution cam0=" << w0 << "x" << h0 << " cam1=" << w1 << "x" << h1;
-#ifdef MSF_USE_AXERA_IVPS
-    if (image_message.has_reloc_images && image_message.reloc_image0 && image_message.reloc_image1) {
-        MSF_ILOG << " | reloc_rgb cam0=" << image_message.reloc_image0->width() << "x"
-                 << image_message.reloc_image0->height() << " cam1="
-                 << image_message.reloc_image1->width() << "x"
-                 << image_message.reloc_image1->height();
-    }
-#else
-    if (image_message.has_reloc_images && !image_message.reloc_image0.empty() &&
-        !image_message.reloc_image1.empty()) {
-        MSF_ILOG << " | reloc_rgb cam0=" << image_message.reloc_image0.cols << "x"
-                 << image_message.reloc_image0.rows << " cam1="
-                 << image_message.reloc_image1.cols << "x" << image_message.reloc_image1.rows;
-    }
-#endif
-
     int tracking_w = 0;
     int tracking_h = 0;
     ConfigUtils::computeTrackingImageSize(config_params, tracking_w, tracking_h);
@@ -162,9 +98,6 @@ void logImageResolutionIfChanged(const cv::Mat& image0_mat, const cv::Mat& image
     if (w0 > 0 && h0 > 0) {
         MSF_ILOG << " | input=" << w0 << "x" << h0;
     }
-
-    const auto& reloc_cfg = config_params.reloc_config_params_;
-    MSF_ILOG << " | reloc=" << reloc_cfg.resolution_width << "x" << reloc_cfg.resolution_height;
 
     const auto& yaml_res = config_params.camera_config_params_.cam_resolutions;
     if (yaml_res.size() >= 2 && yaml_res[0].size() >= 2 && yaml_res[1].size() >= 2) {
@@ -257,9 +190,6 @@ void MeasurementManager::constructPtrs(const MsFusionConfigParams& config_params
     td_cam_to_imu_ = (camera_params.cams_to_imu_time_offsets.at(0) + 
                       camera_params.cams_to_imu_time_offsets.at(1)) * 0.5;
 
-    // Reloc has its own camera model/optional undistortion and does not change VIO.
-    const auto& reloc_cfg = config_params.reloc_config_params_;
-
     int tracking_w = 0;
     int tracking_h = 0;
     ConfigUtils::computeTrackingImageSize(config_params, tracking_w, tracking_h);
@@ -276,10 +206,6 @@ void MeasurementManager::constructPtrs(const MsFusionConfigParams& config_params
     // 构造特征点提取跟踪器对象指针
     tracking_ptr_ = std::make_shared<Tracking>(cameras_, config_params.tracking_config_params_);
 
-    // 构造重定位接口（仅 reloc.enable 时加载 YOLO 模型）
-    if (config_params.reloc_config_params_.enable) {
-        reloc_ptr_ = std::make_shared<ReLoc>(reloc_cfg, camera_params);
-    }
 }
 
 void MeasurementManager::stop() {
@@ -649,482 +575,107 @@ void MeasurementManager::processImageMessage(const ImageMessage& image_message,
                                              size_t image_queue_size_after,
                                              size_t image_queue_dropped) {
     using Clock = MonotonicRawClock;
-    // 开机到相机真正出第一帧图像之间可能有几秒延迟（IVPS/驱动启动），这段
-    // 空等时间不该扣初始化超时预算：第一帧图像真正进入处理时才起始计时器。
-    // 之后每帧都调用，但只有还没起始时才真正生效，之后是空操作。
     MsFusionManager::SnglPtr()->markInitTimerStartOnFirstImage();
-    const auto frontend_process_begin = Clock::now();
-    FrameFrontendTiming frame_timing;
-    FrameRelocTiming reloc_timing;
-    frame_timing.input_decode_ms = image_message.input_decode_ms;
-    frame_timing.input_source_ms = image_message.input_source_ms;
-    frame_timing.ivps_tracking_grab_ms = image_message.ivps_tracking_grab_ms;
-    frame_timing.ivps_tracking_convert_ms = image_message.ivps_tracking_convert_ms;
-    frame_timing.ivps_tracking_release_ms = image_message.ivps_tracking_release_ms;
+    const auto process_begin = Clock::now();
+    FrameFrontendTiming timing;
+    timing.input_decode_ms = image_message.input_decode_ms;
+    timing.input_source_ms = image_message.input_source_ms;
+    timing.ivps_tracking_grab_ms = image_message.ivps_tracking_grab_ms;
+    timing.ivps_tracking_convert_ms = image_message.ivps_tracking_convert_ms;
+    timing.ivps_tracking_release_ms = image_message.ivps_tracking_release_ms;
+    timing.image_queue_size = static_cast<double>(image_queue_size_after);
+    timing.image_queue_dropped = static_cast<double>(image_queue_dropped);
+    timing.producer_dropped = static_cast<double>(producer_dropped_count_.exchange(0));
     if (image_message.frontend_enqueue_time_valid) {
-        frame_timing.input_queue_wait_ms = std::chrono::duration<double, std::milli>(
-                                                   frontend_process_begin -
-                                                   image_message.frontend_enqueue_time)
-                                                   .count();
+        timing.input_queue_wait_ms = std::chrono::duration<double, std::milli>(
+            process_begin - image_message.frontend_enqueue_time).count();
     }
-    reloc_timing.ivps_grab_ms = image_message.ivps_reloc_grab_ms;
-    reloc_timing.ivps_convert_ms = image_message.ivps_reloc_convert_ms;
-    reloc_timing.ivps_release_ms = image_message.ivps_reloc_release_ms;
-    frame_timing.image_queue_size = static_cast<double>(image_queue_size_after);
-    frame_timing.image_queue_dropped = static_cast<double>(image_queue_dropped);
-
-    // 板端 IVPS 路径下 image_message.image0/1 是零拷贝硬件句柄（IvpsFramePtr），
-    // Tracking 里金字塔构建等需要真正 cv::Mat 像素访问的地方统一用这里转出来的
-    // image0_mat/image1_mat；和以前"抓图阶段 clone 一次"的总拷贝成本一致，只是
-    // 这次拷贝挪到了消费侧。非 IVPS 路径下 image_message.image0/1 本来就是
-    // cv::Mat，直接引用即可，不产生额外拷贝。
 #ifdef MSF_USE_AXERA_IVPS
-    const cv::Mat image0_mat =
-        image_message.image0 ? image_message.image0->toCvMatCopy() : cv::Mat();
-    const cv::Mat image1_mat =
-        image_message.image1 ? image_message.image1->toCvMatCopy() : cv::Mat();
+    const cv::Mat image0_mat = image_message.image0 ? image_message.image0->toCvMatCopy() : cv::Mat();
+    const cv::Mat image1_mat = image_message.image1 ? image_message.image1->toCvMatCopy() : cv::Mat();
+    IvpsFramePtr tracking_handle0 = image_message.image0;
+    IvpsFramePtr tracking_handle1 = image_message.image1;
 #else
     const cv::Mat& image0_mat = image_message.image0;
     const cv::Mat& image1_mat = image_message.image1;
 #endif
-
     logImageResolutionIfChanged(image0_mat, image1_mat, image_message, config_params_);
-
-    // 恢复图片的时间戳（相机与IMU对齐）
-    double timestamp_corrected = image_message.timestamp + td_cam_to_imu_;
-
-    {
-        Lock lock(image_message_queue_mutex_);
-        g_timestamp_log.updateImage(image_message.timestamp, timestamp_corrected, td_cam_to_imu_,
-                                    image_message_queue_.size());
-    }
-
-    // 定义视觉观测数据
-    VisionMeasurement vision_measurement;
-
-    // 赋值视觉观测数据的时间戳
-    vision_measurement.timestamp = timestamp_corrected;
-
-    // 用这一帧的视觉时间戳推进周期重定位的计时门控（不用墙钟），到点会置位
-    // periodic_reloc_pending_，下面 decideRelocDispatchIdentity() 就会读到
-    MsFusionManager::SnglPtr()->updatePeriodicRelocGate(timestamp_corrected);
-
-    // 触发身份 + （周期触发时）请求编号在这里、这一帧真正决定要不要跑 Reloc
-    // 的时刻一次性钉死，随 vision_measurement 一起进后端队列——消费时
-    // （consumePeriodicRelocMeasurement）只认这份身份，不按消费那一刻的系统
-    // 状态重新猜测来源，见 RelocTriggerSource 声明处注释。source 和
-    // periodic_request_id 必须在同一次调用里一起拿到：分成两次独立读取的话，
-    // 后端线程可能恰好在两次读取之间把这个请求判定成功并递增编号，见
-    // MsFusionManager::decideRelocDispatchIdentity() 声明处注释。
-    auto reloc_dispatch_identity =
-        reloc_ptr_ != nullptr ? MsFusionManager::SnglPtr()->decideRelocDispatchIdentity()
-                              : MsFusionManager::RelocDispatchIdentity();
-    bool run_reloc_yolo = reloc_dispatch_identity.source != RelocTriggerSource::kNone;
-#ifdef MSF_USE_AXERA_IVPS
-    // AX IVPS 零拷贝路径下，"要不要转彩色图"（抓图线程，msf_ivps_grabber.cpp:257）
-    // 和"要不要跑 YOLO"（这里，decideRelocDispatchIdentity()）是两次独立求值、且
-    // 必然错开时序的判断：抓图线程判断这一帧要不要转彩色时，周期门控往往还没翻
-    // （要等这一帧真的流转到这里、调用上面的 updatePeriodicRelocGate() 才会翻），
-    // 所以真正触发周期重定位的那一帧，彩色图几乎总是缺的。以前这种情况会静默回退到
-    // 灰度跟踪图再跑 YOLO——模型在彩色数据上训练，长期吃灰度输入会掉检测质量，
-    // 且这个退化是"every periodic cycle"必现的，不是偶发。
-    // 现在改成：没有彩色图就这一帧不跑 YOLO、也不消费周期名额，让 pending 保持
-    // 置位留到下一帧——下一帧抓图线程再判断时能看到 pending 已经是 true，会正常
-    // 转出彩色图，YOLO 只会用在真正拿到彩色图的那一帧上。
-    if (run_reloc_yolo && !image_message.has_reloc_images) {
-        run_reloc_yolo = false;
-        reloc_dispatch_identity = MsFusionManager::RelocDispatchIdentity();
-    }
-#endif
-    if (run_reloc_yolo) {
-        // 不管这次是因为初始化、service 还是周期触发才跑，既然已经决定为这一帧
-        // 跑 YOLO，就顺带消费掉周期名额，避免消费延迟导致连续多帧重复触发
-        MsFusionManager::SnglPtr()->consumePeriodicRelocDispatch();
-    }
-
-    vision_measurement.reloc_trigger_source = reloc_dispatch_identity.source;
-    vision_measurement.reloc_request_id = reloc_dispatch_identity.periodic_request_id;
-
-    // 软门控：reloc.enable 且还在 INITIALIZING（未通过 relocInitProcess() 的多帧
-    // 融合 + IMU 静止确认）时，不需要 Tracking/XFeat/LightGlue，连它专用的降采样
-    // 预处理（下面的 tracking resize）也一起跳过——不只是不调用 run_tracking()。
-    // relocInitProcess() 只读 vision_measurement.timestamp 和 reloc_measurement，
-    // 不依赖 track_feat_info，留空是安全的；run_reloc_yolo 在 INITIALIZING 期间
-    // 恒为 true（见 needRelocYolo()），reloc 仍照常跑。
-    // 已知取舍：触发"Initialization successful"的那一帧本身也跳过了 tracking，
-    // feature_manager 要等下一帧（状态已切到 INIT_OPTIMIZING、tracking 恢复
-    // 运行）才开始正常喂特征——这是软门控相对完整 bootstrap 方案的已知代价，
-    // 不做额外处理。
-    const bool skip_tracking_for_reloc_bootstrap =
-        config_params_.reloc_config_params_.enable &&
-        MsFusionManager::SnglPtr()->isInitializing();
-    frame_timing.bootstrap_skip_tracking = skip_tracking_for_reloc_bootstrap ? 1.0 : 0.0;
-    // Producer-side drops can accumulate while the vision thread is blocked in
-    // pushVisionMeasurement().  Exchange makes the next processed frame carry
-    // the exact backlog-drop count without extending the queue-lock lifetime.
-    frame_timing.producer_dropped = static_cast<double>(
-        producer_dropped_count_.exchange(0, std::memory_order_relaxed));
-
-    const auto& reloc_cfg = config_params_.reloc_config_params_;
-    cv::Mat reloc_image0;
-    cv::Mat reloc_image1;
-    if (run_reloc_yolo) {
-#ifdef MSF_USE_AXERA_IVPS
-        // reloc_image0/1 是零拷贝句柄，toCvMatCopy() 的深拷贝推迟到这里、且只在
-        // run_reloc_yolo 为真时才做——比以前"抓图线程每次配对成功就转换一次"
-        // 更精确地按需付出这次拷贝代价
-        const cv::Mat reloc_mat0 = (image_message.has_reloc_images && image_message.reloc_image0)
-                                       ? image_message.reloc_image0->toCvMatCopy()
-                                       : cv::Mat();
-        const cv::Mat reloc_mat1 = (image_message.has_reloc_images && image_message.reloc_image1)
-                                       ? image_message.reloc_image1->toCvMatCopy()
-                                       : cv::Mat();
-        const cv::Mat& reloc_src0 = image_message.has_reloc_images ? reloc_mat0 : image0_mat;
-        const cv::Mat& reloc_src1 = image_message.has_reloc_images ? reloc_mat1 : image1_mat;
-#else
-        const cv::Mat& reloc_src0 =
-            image_message.has_reloc_images ? image_message.reloc_image0 : image0_mat;
-        const cv::Mat& reloc_src1 =
-            image_message.has_reloc_images ? image_message.reloc_image1 : image1_mat;
-#endif
-        const auto reloc_resize_begin = Clock::now();
-        resizeRelocImages(reloc_src0, reloc_src1, reloc_cfg.resolution_width,
-                          reloc_cfg.resolution_height, reloc_image0, reloc_image1);
-        reloc_timing.resize_ms =
-            std::chrono::duration<double, std::milli>(Clock::now() - reloc_resize_begin).count();
-    }
-
-    static const cv::Mat kEmptyMat;
-    const cv::Mat& debug_color_image0 = kEmptyMat;
-    const cv::Mat& debug_color_image1 = kEmptyMat;
-
-    std::array<double, 2> branch_ms = {-1.0, -1.0};
-    Clock::time_point reloc_ready_time{};
-    bool reloc_ready_time_valid = false;
-    double track_process_ms = -1.0;
-    double track_pack_ms = -1.0;
-
-    const MonotonicRawClock::time_point* acquire_begin =
-        image_message.image_acquire_begin_valid ? &image_message.image_acquire_begin : nullptr;
-
-    cv::Mat tracking_image0 = image0_mat;
-    cv::Mat tracking_image1 = image1_mat;
-#ifdef MSF_USE_AXERA_IVPS
-    IvpsFramePtr tracking_handle0 = image_message.image0;
-    IvpsFramePtr tracking_handle1 = image_message.image1;
-#endif
-
-    // 如果图片进行降采样（bootstrap 软门控跳过 tracking 时，这段预处理也没有
-    // 意义，一起跳过）
-    if (config_params_.tracking_config_params_.downsize_camera &&
-        !skip_tracking_for_reloc_bootstrap) {
-        int tracking_w = 0;
-        int tracking_h = 0;
-        ConfigUtils::computeTrackingImageSize(config_params_, tracking_w, tracking_h);
-        // IVPS 金字塔已输出 tracking 尺寸时跳过二次缩放
-        const bool already_tracking_size =
-            image0_mat.cols == tracking_w && image1_mat.cols == tracking_w &&
-            image0_mat.rows == tracking_h && image1_mat.rows == tracking_h;
-        if (!already_tracking_size) {
-            const auto tracking_resize_begin = Clock::now();
-            const auto resize_tracking_image = [tracking_w, tracking_h](
-                                                   const cv::Mat& source,
-                                                   cv::Mat& destination) {
-                const auto geometry = makeTopLeftPaddedImageGeometry(
-                    source.cols, source.rows, tracking_w, tracking_h);
+    const double timestamp_corrected = image_message.timestamp + td_cam_to_imu_;
+    VisionMeasurement measurement;
+    measurement.timestamp = timestamp_corrected;
+    cv::Mat tracking_image0 = image0_mat, tracking_image1 = image1_mat;
+    if (config_params_.tracking_config_params_.downsize_camera) {
+        int w = 0, h = 0;
+        ConfigUtils::computeTrackingImageSize(config_params_, w, h);
+        if (image0_mat.size() != cv::Size(w, h) || image1_mat.size() != cv::Size(w, h)) {
+            const auto resize_one = [w, h](const cv::Mat& src, cv::Mat& dst) {
+                const auto g = makeTopLeftPaddedImageGeometry(src.cols, src.rows, w, h);
                 cv::Mat resized;
-                cv::resize(source, resized,
-                           cv::Size(geometry.content_width, geometry.content_height), 0.0, 0.0,
-                           cv::INTER_LINEAR);
-                cv::copyMakeBorder(resized, destination, 0, geometry.pad_bottom, 0,
-                                   geometry.pad_right, cv::BORDER_CONSTANT,
-                                   cv::Scalar::all(0));
+                cv::resize(src, resized, cv::Size(g.content_width, g.content_height));
+                cv::copyMakeBorder(resized, dst, 0, g.pad_bottom, 0, g.pad_right,
+                                   cv::BORDER_CONSTANT, cv::Scalar::all(0));
             };
-            cv::Mat image0_resized, image1_resized;
-            resize_tracking_image(image0_mat, image0_resized);
-            resize_tracking_image(image1_mat, image1_resized);
-            tracking_image0 = image0_resized;
-            tracking_image1 = image1_resized;
-            frame_timing.vision_tracking_resize_ms =
-                std::chrono::duration<double, std::milli>(Clock::now() - tracking_resize_begin)
-                    .count();
+            resize_one(image0_mat, tracking_image0);
+            resize_one(image1_mat, tracking_image1);
 #ifdef MSF_USE_AXERA_IVPS
-            // 句柄和 tracking_image0/1 只有在源帧尺寸本来就等于 tracking 目标尺寸时
-            // 才表示同一份数据。一旦触发上面的软件 resize，句柄仍是原始分辨率，NPU
-            // 零拷贝检测出来的关键点坐标会是原始分辨率下的，和描述子匹配/网格筛选
-            // 用的 tracking 分辨率坐标系不一致，此时必须置空退回 cv::Mat 检测路径。
             tracking_handle0 = nullptr;
             tracking_handle1 = nullptr;
 #endif
         }
     }
-
-    auto run_reloc = [&]() {
-        const auto branch_begin = Clock::now();
-        reloc_ptr_->process(timestamp_corrected, reloc_image0, reloc_image1);
-        reloc_ptr_->info(vision_measurement.reloc_measurement);
-        // 供 MsFusionManager::applyRelocCorrectionLocked() 内部判定豁免依据，
-        // 见 ReLocMeasurement::trigger_source 声明处注释。
-        vision_measurement.reloc_measurement.trigger_source = vision_measurement.reloc_trigger_source;
-        {
-            // 质量指标供现场诊断打印用（见 pipeline_timing.cpp）
-            const auto& reloc_frame_timing = reloc_ptr_->lastFrameTiming();
-            vision_measurement.reloc_measurement.avg_reprojection_error_px =
-                reloc_frame_timing.avg_reprojection_error_px;
-            vision_measurement.reloc_measurement.ransac_inliers =
-                reloc_frame_timing.ransac_inliers;
-            vision_measurement.reloc_measurement.valid_observations =
-                reloc_frame_timing.valid_observations;
-            vision_measurement.reloc_measurement.inlier_landmarks =
-                reloc_frame_timing.inlier_landmarks;
-        }
-        reloc_ready_time = Clock::now();
-        reloc_ready_time_valid = true;
-        branch_ms[0] =
-            std::chrono::duration<double, std::milli>(reloc_ready_time - branch_begin).count();
-    };
-
-    auto run_tracking = [&]() {
-        const auto branch_begin = Clock::now();
-        const auto track_process_begin = Clock::now();
-
-        // The same immutable backend KF drives matching and its rotation prior.
-        auto reference = MsFusionManager::SnglPtr()->temporalKeyframeReference();
-        if (reference.timestamp < 0.0 || reference.timestamp >= timestamp_corrected) {
-            reference = {};
-        }
-        tracking_ptr_->setTemporalReference(reference);
-        vision_measurement.matching_reference_timestamp = reference.timestamp;
-        vision_measurement.matching_reference_count = reference.ids.size();
-        Eigen::Quaterniond imu_rotation_prior_body;
-        const bool has_imu_rotation_prior = !reference.ids.empty() &&
-            queryGyroRotation(reference.timestamp, timestamp_corrected,
-                              &imu_rotation_prior_body);
-
-        tracking_ptr_->processImage(timestamp_corrected, tracking_image0, tracking_image1,
-                                    acquire_begin, debug_color_image0, debug_color_image1,
-                                    has_imu_rotation_prior ? &imu_rotation_prior_body : nullptr
+    auto reference = MsFusionManager::SnglPtr()->temporalKeyframeReference();
+    if (reference.timestamp < 0.0 || reference.timestamp >= timestamp_corrected) reference = {};
+    tracking_ptr_->setTemporalReference(reference);
+    measurement.matching_reference_timestamp = reference.timestamp;
+    measurement.matching_reference_count = reference.ids.size();
+    Eigen::Quaterniond rotation_prior;
+    const bool has_prior = !reference.ids.empty() &&
+        queryGyroRotation(reference.timestamp, timestamp_corrected, &rotation_prior);
+    const MonotonicRawClock::time_point* acquire_begin =
+        image_message.image_acquire_begin_valid ? &image_message.image_acquire_begin : nullptr;
+    static const cv::Mat kEmptyMat;
+    const auto track_begin = Clock::now();
+    tracking_ptr_->processImage(timestamp_corrected, tracking_image0, tracking_image1,
+                                acquire_begin, kEmptyMat, kEmptyMat,
+                                has_prior ? &rotation_prior : nullptr
 #ifdef MSF_USE_AXERA_IVPS
-                                    , tracking_handle0, tracking_handle1
+                                , tracking_handle0, tracking_handle1
 #endif
-                                    );
-        track_process_ms = std::chrono::duration<double, std::milli>(
-                               Clock::now() - track_process_begin)
-                               .count();
-        const auto track_pack_begin = Clock::now();
-        tracking_ptr_->getFeatInfo(vision_measurement.track_feat_info);
-        track_pack_ms = std::chrono::duration<double, std::milli>(
-                            Clock::now() - track_pack_begin)
-                            .count();
-        branch_ms[1] =
-            std::chrono::duration<double, std::milli>(Clock::now() - branch_begin).count();
-    };
-
-    bool tracking_ran = false;
-    if (skip_tracking_for_reloc_bootstrap) {
-        if (run_reloc_yolo) {
-            run_reloc();
-        }
-    } else if (run_reloc_yolo) {
-        tbb::parallel_invoke(run_reloc, run_tracking);
-        tracking_ran = true;
-    } else {
-        run_tracking();
-        tracking_ran = true;
+                                );
+    timing.track_process_ms = std::chrono::duration<double, std::milli>(
+        Clock::now() - track_begin).count();
+    tracking_ptr_->getFeatInfo(measurement.track_feat_info);
+    measurement.has_loop_descriptors = tracking_ptr_->getLoopDescriptors(
+        measurement.loop_keypoints, measurement.loop_descriptors);
+    measurement.has_loop_landmark_descriptors = tracking_ptr_->getLoopLandmarkDescriptors(
+        measurement.loop_landmark_ids, measurement.loop_landmark_keypoints,
+        measurement.loop_landmark_descriptors);
+    const auto& track = tracking_ptr_->lastFrameTiming();
+    timing.track_core_ms = track.core_ms;
+    timing.track_loop_ms = track.loop_ms;
+    timing.track_total_ms = timing.track_process_ms;
+    timing.tracked_features = track.tracked_features;
+    timing.new_detected_features = track.new_detected_features;
+    timing.reference_age_ms = track.reference_age_ms;
+    const auto& npu = tracking_ptr_->lastNpuTiming();
+    if (npu.valid) {
+        timing.track_detect_pre_ms = npu.preprocess_ms;
+        timing.track_detect_infer_ms = npu.infer_ms;
+        timing.track_detect_output_ms = npu.output_ms;
+        timing.track_detect_post_ms = npu.post_ms;
+        timing.track_descriptor_map_ms = npu.descriptor_map_ms;
+        timing.track_descriptor_sample_ms = npu.descriptor_sample_ms;
+        timing.track_detect_ms = npu.detect_ms;
+        timing.track_detect_total_ms = npu.total_ms;
+        timing.npu_calls = static_cast<double>(npu.calls);
     }
-
-    // Loop BoW descriptors: 依赖本帧的 tracking 结果，tracking 没跑（bootstrap
-    // 软门控）就不能取，否则拿到的是 Tracking 内部上一次处理的陈旧结果。
-    if (tracking_ran) {
-        const auto loop_prep_begin = Clock::now();
-        frame_timing.loop_closure_desc_rows = 0.0;
-        frame_timing.loop_closure_landmark_desc_rows = 0.0;
-        vision_measurement.has_loop_descriptors = tracking_ptr_->getLoopDescriptors(
-            vision_measurement.loop_keypoints, vision_measurement.loop_descriptors);
-        vision_measurement.has_loop_landmark_descriptors =
-            tracking_ptr_->getLoopLandmarkDescriptors(
-                vision_measurement.loop_landmark_ids,
-                vision_measurement.loop_landmark_keypoints,
-                vision_measurement.loop_landmark_descriptors);
-        frame_timing.loop_closure_desc_prep_ms =
-            std::chrono::duration<double, std::milli>(Clock::now() - loop_prep_begin).count();
-        if (vision_measurement.has_loop_descriptors) {
-            frame_timing.loop_closure_desc_rows =
-                static_cast<double>(vision_measurement.loop_descriptors.rows);
-        }
-        if (vision_measurement.has_loop_landmark_descriptors) {
-            frame_timing.loop_closure_landmark_desc_rows =
-                static_cast<double>(vision_measurement.loop_landmark_descriptors.rows);
-        }
-    }
-
-    if (run_reloc_yolo) {
-        reloc_timing.input_source_ms = image_message.input_source_ms;
-        reloc_timing.input_queue_wait_ms = frame_timing.input_queue_wait_ms;
-        reloc_timing.process_ms = branch_ms[0];
-        const auto& yolo_timing = reloc_ptr_->yoloFrameTiming();
-        const auto& process_timing = reloc_ptr_->lastFrameTiming();
-        reloc_timing.undistort_ms = process_timing.undistort_ms;
-        if (process_timing.yolo_ran != 0) {
-            reloc_timing.yolo_preprocess_ms = yolo_timing.preprocess_ms;
-            reloc_timing.yolo_infer_ms = yolo_timing.infer_ms;
-            reloc_timing.yolo_post_ms = yolo_timing.post_ms;
-            reloc_timing.yolo_total_ms = yolo_timing.total_ms;
-            reloc_timing.detections_left = yolo_timing.detections_left;
-            reloc_timing.detections_right = yolo_timing.detections_right;
-            reloc_timing.lines_left = yolo_timing.lines_left;
-            reloc_timing.lines_right = yolo_timing.lines_right;
-            reloc_timing.keypoints_left = yolo_timing.keypoints_left;
-            reloc_timing.keypoints_right = yolo_timing.keypoints_right;
-        }
-        reloc_timing.debug_publish_ms = process_timing.debug_publish_ms;
-        reloc_timing.feature_pack_ms = process_timing.feature_pack_ms;
-        reloc_timing.correspondence_ms = process_timing.correspondence_ms;
-        reloc_timing.ransac_ms = process_timing.ransac_ms;
-        reloc_timing.refine_ms = process_timing.refine_ms;
-        reloc_timing.validate_ms = process_timing.validate_ms;
-        reloc_timing.pose_total_ms = process_timing.pose_total_ms;
-        reloc_timing.unique_landmarks = process_timing.unique_landmarks;
-        reloc_timing.raw_observations = process_timing.raw_observations;
-        reloc_timing.valid_observations = process_timing.valid_observations;
-        reloc_timing.ransac_inliers = process_timing.ransac_inliers;
-        reloc_timing.inlier_landmarks = process_timing.inlier_landmarks;
-        reloc_timing.ransac_iterations = process_timing.ransac_iterations;
-        reloc_timing.refine_iterations = process_timing.refine_iterations;
-        reloc_timing.refine_residuals = process_timing.refine_residuals;
-        reloc_timing.pose_success = process_timing.pose_success;
-        reloc_timing.refine_success = process_timing.refine_success;
-        reloc_timing.avg_reprojection_error_px = process_timing.avg_reprojection_error_px;
-        reloc_timing.pose_x = process_timing.pose_x;
-        reloc_timing.pose_y = process_timing.pose_y;
-        reloc_timing.pose_z = process_timing.pose_z;
-        reloc_timing.pose_yaw_deg = process_timing.pose_yaw_deg;
-        if (image_message.image_acquire_begin_valid && reloc_ready_time_valid) {
-            reloc_timing.total_ms = std::chrono::duration<double, std::milli>(
-                                        reloc_ready_time - image_message.image_acquire_begin)
-                                        .count();
-        } else {
-            const double source_ms = reloc_timing.input_source_ms >= 0.0
-                                         ? reloc_timing.input_source_ms
-                                         : 0.0;
-            const double queue_ms = reloc_timing.input_queue_wait_ms >= 0.0
-                                        ? reloc_timing.input_queue_wait_ms
-                                        : 0.0;
-            reloc_timing.total_ms = source_ms + queue_ms +
-                (reloc_timing.resize_ms >= 0.0 ? reloc_timing.resize_ms : 0.0) +
-                (reloc_timing.process_ms >= 0.0 ? reloc_timing.process_ms : 0.0);
-        }
-
-        // 初始化阶段超过 initializer.init_timeout_s（计时器从第一帧图像到达
-        // 才起始，见本函数开头 markInitTimerStartOnFirstImage()；静止转运动
-        // 还会重新计时，见 MsFusionManager::addNewTimeNode）还没完成时：保存
-        // 这一帧的 YOLO-OBB 可视化图（画了线段/关键点，比纯 undistort 原图
-        // 能看出问题）供离线分析，打印超时消息和保存的文件名，退出进程。
-        // <=0 表示不启用这个超时。
-        const double init_timeout_s = config_params_.initializer_config_params_.init_timeout_s;
-        if (init_timeout_s > 0.0 && MsFusionManager::SnglPtr()->isInitializing() &&
-            MsFusionManager::SnglPtr()->initializingElapsedSeconds() >= init_timeout_s) {
-            static const std::string kInitTimeoutSaveDir = "/tmp/ms_fusion_reloc_init_timeout";
-            std::error_code ec;
-            std::filesystem::create_directories(kInitTimeoutSaveDir, ec);
-            std::string saved_path;
-            if (!ec) {
-                const cv::Mat yolo_debug_image = reloc_ptr_->renderYoloDebugImage();
-                if (!yolo_debug_image.empty()) {
-                    char ts_buf[64];
-                    std::snprintf(ts_buf, sizeof(ts_buf), "%.6f", timestamp_corrected);
-                    saved_path = kInitTimeoutSaveDir + "/reloc_yolo_debug_t" + ts_buf + ".png";
-                    cv::imwrite(saved_path, yolo_debug_image);
-                }
-            }
-            MSF_ELOG << "========== [Reloc] Initialization timed out after " << init_timeout_s
-                     << "s, saved debug image: "
-                     << (saved_path.empty() ? "(unavailable)" : saved_path)
-                     << ", requesting shutdown ==========" << std::endl;
-            // 不能用 std::exit()：is_finished_ 只在 stopMsFusion() 里置位、几个 std::thread
-            // 成员（ins_thread_/fusion_thread_/imu_thread_/odom_thread_/
-            // vision_thread_——这个检查本身就跑在 vision_thread_ 里）也从没
-            // join 过，std::exit() 触发的静态析构会在这个线程自己还在跑的时候
-            // 去析构/join 它自己（以及仍在无限循环里的其它线程），要么直接
-            // std::terminate、要么卡死，进程出不来。改成发 SIGINT 给自己，走
-            // 跟 Ctrl-C 完全一样、rclcpp 已经装好处理器的正常关闭路径。
-            std::raise(SIGINT);
-        }
-    }
-
-    const auto& track_timing = tracking_ptr_->lastFrameTiming();
-    frame_timing.track_process_ms = track_process_ms;
-    frame_timing.track_pack_ms = track_pack_ms;
-    frame_timing.track_core_ms = track_timing.core_ms;
-    frame_timing.track_loop_ms = track_timing.loop_ms;
-    frame_timing.track_loop_frame_match_ms = track_timing.loop_frame_match_ms;
-    frame_timing.track_loop_stereo_filter_ms = track_timing.loop_stereo_filter_ms;
-    frame_timing.track_temporal_match_exec_ms = track_timing.temporal_match_exec_ms;
-    frame_timing.track_stereo_match_exec_ms = track_timing.stereo_match_exec_ms;
-    frame_timing.track_detect_dense_ms = track_timing.detect_dense_ms;
-    frame_timing.track_landmark_resample_ms = track_timing.landmark_resample_ms;
-    frame_timing.track_total_ms = branch_ms[1];
-    frame_timing.input_features = track_timing.input_features;
-    frame_timing.reference_age_ms = tracking_ran ? track_timing.reference_age_ms : -1.0;
-    frame_timing.supplemented_features = track_timing.supplemented_features;
-    frame_timing.temporal_left_features = track_timing.temporal_left_features;
-    frame_timing.temporal_right_features = track_timing.temporal_right_features;
-    frame_timing.stereo_candidate_features = track_timing.stereo_candidate_features;
-    frame_timing.tracked_features = track_timing.tracked_features;
-    frame_timing.new_detected_features = track_timing.new_detected_features;
-    frame_timing.detect_raw_features = track_timing.detect_raw_features;
-    frame_timing.npu_raw_features = track_timing.npu_raw_features;
-    frame_timing.npu_grid_features = track_timing.npu_grid_features;
-    frame_timing.stereo_input_features = track_timing.stereo_input_features;
-    frame_timing.stereo_l2r_features = track_timing.stereo_l2r_features;
-    frame_timing.stereo_fb_features = track_timing.stereo_fb_features;
-    frame_timing.stereo_epi_features = track_timing.stereo_epi_features;
-    frame_timing.stereo_epi_err_p50 = track_timing.stereo_epi_err_p50;
-    frame_timing.stereo_epi_err_p90 = track_timing.stereo_epi_err_p90;
-    frame_timing.stereo_subpix_features = track_timing.stereo_subpix_features;
-
-    const auto& npu_timing = tracking_ptr_->lastNpuTiming();
-    if (npu_timing.valid) {
-        frame_timing.track_detect_pre_ms = npu_timing.preprocess_ms;
-        frame_timing.track_detect_infer_ms = npu_timing.infer_ms;
-        frame_timing.track_detect_output_ms = npu_timing.output_ms;
-        frame_timing.track_detect_post_ms = npu_timing.post_ms;
-        frame_timing.track_descriptor_map_ms = npu_timing.descriptor_map_ms;
-        frame_timing.track_descriptor_sample_ms = npu_timing.descriptor_sample_ms;
-        frame_timing.track_detect_ms = npu_timing.detect_ms;
-        frame_timing.track_detect_total_ms = npu_timing.total_ms;
-        frame_timing.npu_calls = static_cast<double>(npu_timing.calls);
-    }
-
-    // Enqueue first: copying the measurement payload into the backend queue is
-    // frontend work, while backend queue wait starts at the timestamp captured
-    // inside pushVisionMeasurement().
-    const auto backend_enqueue_begin = Clock::now();
-    const auto frontend_ready =
-        MsFusionManager::SnglPtr()->pushVisionMeasurement(vision_measurement);
-    frame_timing.backend_enqueue_ms = std::chrono::duration<double, std::milli>(
-                                          frontend_ready - backend_enqueue_begin)
-                                          .count();
-    frame_timing.frontend_process_ms =
-        std::chrono::duration<double, std::milli>(frontend_ready - frontend_process_begin).count();
-    if (image_message.image_acquire_begin_valid) {
-        frame_timing.frontend_e2e_ms = std::chrono::duration<double, std::milli>(
-                                                 frontend_ready - image_message.image_acquire_begin)
-                                                 .count();
-    } else if (image_message.frontend_enqueue_time_valid) {
-        frame_timing.frontend_e2e_ms = std::chrono::duration<double, std::milli>(
-                                                 frontend_ready -
-                                                 image_message.frontend_enqueue_time)
-                                                 .count();
-    } else {
-        frame_timing.frontend_e2e_ms = frame_timing.frontend_process_ms;
-    }
-    if (run_reloc_yolo) {
-        PipelineTiming::recordReloc(reloc_timing);
-    }
-    PipelineTiming::recordFrontend(frame_timing);
-
-    // SuperPoint / XFeat 双目跟踪可视化在 Tracking::publishVisionDebugImageIfEnabled 中发布
+    const auto ready = MsFusionManager::SnglPtr()->pushVisionMeasurement(measurement);
+    timing.frontend_process_ms = std::chrono::duration<double, std::milli>(
+        ready - process_begin).count();
+    timing.frontend_e2e_ms = image_message.image_acquire_begin_valid
+        ? std::chrono::duration<double, std::milli>(ready - image_message.image_acquire_begin).count()
+        : timing.frontend_process_ms;
+    PipelineTiming::recordFrontend(timing);
 }
 
 void MeasurementManager::updateNominalImuDt(double dt) {

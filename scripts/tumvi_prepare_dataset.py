@@ -115,7 +115,7 @@ def write_profile(template: Path, output: Path, calib: dict, intr0: tuple, intr1
             "T_imu_cam": matrix_rows(T_imu_cam)})
         profile["camera"][key]["offline"].update({"topic": f"/tumvi/{key}", "image_type": "compressed"})
     profile["tracking"]["tracking"]["downsize_camera"] = False
-    for feature in ("odom", "reloc", "matched_cloud", "loop"):
+    for feature in ("odom", "matched_cloud", "loop"):
         if feature in profile:
             profile[feature]["enable"] = False
     output.parent.mkdir(parents=True, exist_ok=True)

@@ -84,25 +84,6 @@ class PoseGraph {
   void savePoseGraph();
   void loadPoseGraph();
   void publish();
-  struct RelocJumpCheck {
-    bool invalid = false;   // 位姿含非有限值，未处理
-    bool applied = false;   // 锚点已落地
-    bool has_anchor = false;
-    bool exceeds_limit = false;
-    double delta_position_m = 0.0;
-    double delta_yaw_deg = 0.0;
-    double limit_position_m = 0.0;
-    double limit_yaw_deg = 0.0;
-  };
-  // 用同一时刻的 raw/absolute base_link 位姿更新输出层 4DoF 修正。
-  // 该修正不写入 VIO 状态或 pose graph，只与 graph drift 组合后用于最终
-  // odometry。输出跳变验收与落地在同一把锁内原子完成：check_jump=true 且已有
-  // 锚点、current→target 跳变超限时不落地（applied=false）；没有锚点（启动后
-  // 第一次修正）或 check_jump=false（/reloc 手动触发）时直接落地。
-  // image_time：reloc 图像时间戳，用于把锚点绑定到时间最近的关键帧。
-  RelocJumpCheck applyRelocCorrection(double image_time, const Vector3d &raw_t,
-                                      const Matrix3d &raw_R, const Vector3d &target_t,
-                                      const Matrix3d &target_R, bool check_jump);
   // Thread-safe snapshot of sequence/drift correction applied to live VIO.
   void getVioCorrection(Matrix3d &w_r, Vector3d &w_t, Matrix3d &r, Vector3d &t);
   // 输出层平滑（output_smooth_tau_s>0 才有意义）：raw 是 /odometry_vio 的位姿，
@@ -132,25 +113,12 @@ class PoseGraph {
   void addBowToDatabase(KeyFrame *keyframe, BowVector &&bow);
   void enforceLoopKeyframeLimit();
   int maxEligibleDatabaseId(int frame_index, int min_keyframe_gap) const;
-  // 调用方持有 m_drift；按最新 graph correction 重算绝对 reloc 锚点的外层变换。
-  void computeRelocOutputCorrectionLocked(Matrix3d &r, Vector3d &t) const;
-  // 调用方持有 m_drift；把 raw（VIO 预测的 world<-base_link）经过 graph drift +
-  // 已有 reloc 锚点，算出此刻已经对外发布的 current 位姿——evaluateRelocJumpLocked()
-  // 和 applyRelocCorrection() 共用同一份计算，保证两边看到的"current"一致。
+  // 调用方持有 m_drift；把 raw 位姿经过 graph drift 算出当前输出位姿。
   void computeCurrentFromRawLocked(const Vector3d &raw_t, const Matrix3d &raw_R,
                                    Vector3d &current_t, Matrix3d &current_R) const;
   // 调用方持有 m_drift；vio（已在 w 系下的关键帧 VIO 位姿）-> 对外发布位姿
-  // 调用方持有 m_drift；只读评估 current→target 的跳变量，不修改状态
-  RelocJumpCheck evaluateRelocJumpLocked(const Vector3d &raw_t, const Matrix3d &raw_R,
-                                         const Vector3d &target_t,
-                                         const Matrix3d &target_R) const;
   void computeOutputFromVioLocked(const Vector3d &vio_t, const Matrix3d &vio_R,
                                   Vector3d &current_t, Matrix3d &current_R) const;
-  // 调用方持有 m_keyframelist 和 m_drift，且已写入本次优化后的 r_drift/t_drift；
-  // 按锚点关键帧优化后的位姿更新 reloc_anchor_r_drift/t_drift
-  void updateRelocAnchorDriftLocked(int cur_index);
-  // 调用方持有 m_keyframelist 和 m_drift；关键帧当前的 drift（VIO -> graph）
-  void keyframeDriftLocked(KeyFrame *kf, Matrix3d &r, Vector3d &t) const;
   void optimize4DoF();
   void optimize6DoF();
   void updatePath();
@@ -158,11 +126,9 @@ class PoseGraph {
   std::mutex m_keyframelist;
   std::mutex m_optimize_buf;
   std::mutex m_path;
-  // mutable：evaluateRelocJumpLocked() 等 const 成员，但仍需要在其中
-  // 加锁保护跟 applyRelocCorrection()/getVioCorrection() 共享的 drift 状态。
+  // 保护输出修正与平滑状态。
   mutable std::mutex m_drift;
-  bool has_reloc_anchor = false;
-  // 调用方持有 m_drift；总修正变换 out = Cr * raw + Ct（w_r_vio/drift/reloc 合成）
+  // 调用方持有 m_drift；总修正变换 out = Cr * raw + Ct。
   void computeTotalCorrectionLocked(Matrix3d &Cr, Vector3d &Ct) const;
   // 输出层平滑状态，m_drift 保护
   Vector3d smooth_dp = Vector3d::Zero();
@@ -172,18 +138,6 @@ class PoseGraph {
   Vector3d smooth_prev_Ct = Vector3d::Zero();
   bool smooth_has_stamp = false;
   double smooth_last_stamp = 0.0;
-  // applyRelocCorrection 在落地的同一把锁内置位（首次落地 / 手动触发）：下一帧清空
-  // 残差并直接输出新的绝对位姿，即使修正变换与上一帧相同也要清
-  bool smooth_reset_pending = false;
-  Vector3d reloc_raw_t;
-  Matrix3d reloc_raw_R;
-  Vector3d reloc_target_t;
-  Matrix3d reloc_target_R;
-  // 锚点所在关键帧及其 drift（把锚点 VIO 位姿映射到 graph 系），m_drift 保护；
-  // index=-1 表示落地时还没有关键帧，等第一帧关键帧补绑
-  int reloc_anchor_kf_index = -1;
-  Matrix3d reloc_anchor_r_drift;
-  Vector3d reloc_anchor_t_drift;
   std::thread t_optimization;
   // 优化线程每轮之间等待 2s；shutdown() 置位并唤醒，让线程立即退出
   std::mutex m_optimization_stop;
@@ -206,17 +160,11 @@ class PoseGraph {
     int64_t enqueue_ns = -1;
     int dequeued_requests = 0;
   };
-  // 仅优化线程调用：合并新请求，按 reloc 新鲜度决定本轮是否优化
+  // 仅优化线程调用：合并新请求。
   OptimizeJob takeOptimizeJob();
-  // 最近一次 reloc 落地距今是否仍在 defer_optimize_reloc_fresh_s 内
-  bool isRelocFresh(double &reloc_age_s) const;
-  // 仅优化线程调用：把 job 放回待优化任务并标记推迟（同一批只打一次日志）
-  void deferOptimizeJob(const OptimizeJob &job, double reloc_age_s, const char *reason);
   // 以下两项只在优化线程内读写
   OptimizeJob pending_optimize_job;
   bool pending_optimize_deferred = false;
-  // 最近一次 reloc 成功落地的单调时钟（ns），-1 表示还没有；被拒绝的不刷新
-  std::atomic<int64_t> last_reloc_apply_ns{-1};
 
   int global_index;
   int sequence_cnt;

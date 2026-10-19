@@ -12,7 +12,7 @@ set +u
 source "${ROS_SETUP:-/opt/ros/humble/setup.bash}"
 set -e
 
-# Keep the Axera NPU feature/reloc implementations available for board-side bag replay.
+# Keep the Axera NPU feature implementations available for board-side bag replay.
 # MSF_USE_AXERA_IVPS must be identical for msf_core, ms_fusion and ms_fusion_loop because
 # ImageMessage changes from IvpsFramePtr to cv::Mat at this compile-time boundary.
 # -j10: swap filled up during a -j16 build, likely too many qemu-emulated PCH compiles at once.

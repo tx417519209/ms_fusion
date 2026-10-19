@@ -48,7 +48,7 @@ struct OdomMessage {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
 
-// 相机消息类（tracking 用灰度；reloc/YOLO-OBB 可选用 IVPS RGB 三通道）
+// 相机消息类（tracking 使用灰度图）
 struct ImageMessage {
     // 时间戳
     double timestamp;
@@ -65,20 +65,6 @@ struct ImageMessage {
     cv::Mat image1;
 #endif
 
-    // 左/右目 reloc 图（IVPS RGB GRP 9/10 三通道 BGR；仅板端 IVPS 填充）。板端
-    // IVPS 路径下和 image0/image1 一样是零拷贝硬件句柄（reloc GRP 硬件直接出
-    // RGB888，抓图线程同样用硬件 VGP 拷贝写入一次，不需要 mmap+软件转换），
-    // 需要 cv::Mat 像素访问的消费者自己调用 reloc_image0->toCvMatCopy()；非 IVPS
-    // 路径下仍是普通 cv::Mat。
-#ifdef MSF_USE_AXERA_IVPS
-    IvpsFramePtr reloc_image0;
-    IvpsFramePtr reloc_image1;
-#else
-    cv::Mat reloc_image0;
-    cv::Mat reloc_image1;
-#endif
-    bool has_reloc_images = false;
-
     // 图像采集起始时刻（MONOTONIC_RAW，用于统计采集到特征点的耗时）
     MonotonicRawClock::time_point image_acquire_begin {};
     bool image_acquire_begin_valid = false;
@@ -91,9 +77,6 @@ struct ImageMessage {
     double ivps_tracking_grab_ms = -1.0;
     double ivps_tracking_convert_ms = -1.0;
     double ivps_tracking_release_ms = -1.0;
-    double ivps_reloc_grab_ms = -1.0;
-    double ivps_reloc_convert_ms = -1.0;
-    double ivps_reloc_release_ms = -1.0;
 };
 
 // GNSS消息类
@@ -134,49 +117,6 @@ struct OdomInfo {
 struct DebugImageMessage {
     double timestamp = 0.0;
     cv::Mat image;
-};
-
-// 一次视觉重定位（手动 /reloc 或周期重定位触发）的绝对位姿观测。
-// raw_* 与 target_* 都是同一图像时刻的 world <- base_link。Loop 开启时，
-// Loop 用这对位姿更新最终输出层 4DoF 修正，不改 VIO 内部滑窗状态。
-struct RelocPoseResult {
-    double timestamp = 0.0;
-    Eigen::Vector3d raw_position = Eigen::Vector3d::Zero();
-    Eigen::Quaterniond raw_orientation = Eigen::Quaterniond::Identity();
-    Eigen::Vector3d target_position = Eigen::Vector3d::Zero();
-    Eigen::Quaterniond target_orientation = Eigen::Quaterniond::Identity();
-
-    // 从 ReLocMeasurement::trigger_source 原样复制过来，供 ms_fusion_node.cpp::
-    // publishRelocCorrection() 编码进发给 Loop 的消息里（Loop 是否要豁免输出
-    // 跳变验收，由 Loop 侧自己在 trigger_source==service 时决定，见
-    // pose_graph_node.cpp::reloc_correction_callback）。不在这里存一个额外的
-    // 派生 bool——trigger_source==kService 本身就足够判定，避免同一件事存两份。
-    RelocTriggerSource trigger_source = RelocTriggerSource::kNone;
-
-    // 周期请求编号（初始化后验证请求同样有编号），随修正发给 Loop、由 Loop 的
-    // ACK 原样带回，用于把 ACK 配对到正在等待的请求；/reloc 手动触发为 0。
-    std::uint64_t request_id = 0;
-
-    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-};
-
-// Loop 对一次 reloc 修正的处理结果（ACK）。request_id 与 image_timestamp 原样
-// 来自修正消息，manager 两者都对上才认（Loop 重启时 transient_local 会重放
-// 上一条修正，只比编号可能把旧 ACK 配给新请求）。
-enum class RelocAckStatus : int {
-    kAccepted = 1,  // 已落地为 Loop 锚点
-    kRejected = 2,  // 未落地，原因见 reason
-};
-enum class RelocAckReason : int {
-    kNone = 0,
-    kJumpTooLarge = 1,  // 输出跳变超过 loop.max_correction_*
-    kInvalidPose = 2,   // 位姿非有限或四元数非法
-};
-struct RelocCorrectionAck {
-    std::uint64_t request_id = 0;
-    double image_timestamp = 0.0;
-    RelocAckStatus status = RelocAckStatus::kRejected;
-    RelocAckReason reason = RelocAckReason::kNone;
 };
 
 // Keyframe payload for visual loop closure (SuperVINS-compatible layout).

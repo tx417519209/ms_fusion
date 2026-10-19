@@ -240,13 +240,6 @@ void MsFusionNode::initSubAndPub() {
         RCLCPP_INFO(ros_node_->get_logger(),
                     "Service /rtk_calibrate ready (target pose: x=-12.0, y=0.0, yaw=0.0)");
 
-        reloc_srv_ = ros_node_->create_service<std_srvs::srv::Trigger>(
-            "/reloc",
-            std::bind(&MsFusionNode::relocCallback, this, std::placeholders::_1,
-                      std::placeholders::_2));
-        RCLCPP_INFO(ros_node_->get_logger(),
-                    "Service /reloc ready (on-demand YOLO court reloc, timeout=5s)");
-
         setPubOdomInfoCallback("odom",
             std::bind(&MsFusionNode::pubOdomInfo, this, std::placeholders::_1));
         setPubOdomInfoCallback("est_odom",
@@ -301,18 +294,6 @@ void MsFusionNode::initSubAndPub() {
                         tracking_cfg.stereo_match_debug_topic.c_str());
         }
 
-        const auto& reloc_cfg = ms_fusion_config_params_.reloc_config_params_;
-        if (reloc_cfg.enable && reloc_cfg.publish_debug_image) {
-            pub_reloc_debug_ = ros_node_->create_publisher<sensor_msgs::msg::Image>(
-                reloc_cfg.debug_image_topic, pub_qos);
-            setPubDebugImageCallback(
-                "reloc_debug",
-                std::bind(&MsFusionNode::pubRelocDebugImage, this, std::placeholders::_1));
-            RCLCPP_INFO(ros_node_->get_logger(),
-                        "YOLO-OBB reloc viz enabled, topic=%s",
-                        reloc_cfg.debug_image_topic.c_str());
-        }
-
         try {
             YAML::Node root = YAML::LoadFile(config_file_);
             const YAML::Node loop = root["loop"];
@@ -335,10 +316,6 @@ void MsFusionNode::initSubAndPub() {
                 if (loop["extrinsic_topic"]) {
                     keyframe_loop_cfg_.extrinsic_topic = loop["extrinsic_topic"].as<std::string>();
                 }
-                if (loop["reloc_correction_topic"]) {
-                    keyframe_loop_cfg_.reloc_correction_topic =
-                        loop["reloc_correction_topic"].as<std::string>();
-                }
             }
         } catch (const std::exception& e) {
             RCLCPP_WARN(ros_node_->get_logger(),
@@ -354,28 +331,15 @@ void MsFusionNode::initSubAndPub() {
                 keyframe_loop_cfg_.keyframe_descriptors_topic, pub_qos);
             pub_keyframe_extrinsic_ = ros_node_->create_publisher<nav_msgs::msg::Odometry>(
                 keyframe_loop_cfg_.extrinsic_topic, pub_qos);
-            // 后订阅的 pose_graph_node 也要能拿到"最近一次" reloc 锚点
-            // （周期触发间隔可能远长于节点重启间隔），用 transient_local。
-            const auto reloc_correction_qos =
-                rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
-            pub_reloc_correction_ = ros_node_->create_publisher<geometry_msgs::msg::PoseArray>(
-                keyframe_loop_cfg_.reloc_correction_topic, reloc_correction_qos);
-            sub_reloc_ack_ = ros_node_->create_subscription<std_msgs::msg::UInt64MultiArray>(
-                keyframe_loop_cfg_.reloc_correction_topic + "/ack",
-                rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile(),
-                std::bind(&MsFusionNode::relocAckCallback, this, std::placeholders::_1));
             setPubKeyframeLoopCallback(
                 std::bind(&MsFusionNode::pubKeyframeLoop, this, std::placeholders::_1));
-            setPubRelocCorrectionCallback(
-                std::bind(&MsFusionNode::publishRelocCorrection, this, std::placeholders::_1));
             RCLCPP_INFO(ros_node_->get_logger(),
                         "Keyframe loop publish enabled: pose=%s, point=%s, descriptors=%s, "
-                        "extrinsic=%s, reloc_correction=%s",
+                        "extrinsic=%s",
                         keyframe_loop_cfg_.keyframe_pose_topic.c_str(),
                         keyframe_loop_cfg_.keyframe_point_topic.c_str(),
                         keyframe_loop_cfg_.keyframe_descriptors_topic.c_str(),
-                        keyframe_loop_cfg_.extrinsic_topic.c_str(),
-                        keyframe_loop_cfg_.reloc_correction_topic.c_str());
+                        keyframe_loop_cfg_.extrinsic_topic.c_str());
         }
 
         if (matched_cloud_cfg_.enable) {
@@ -475,21 +439,17 @@ void MsFusionNode::initIvpsGrabOutput() {
     cfg.first_frame_save_dir = RuntimeLog::logDirectory();
     set_msf_ivps_grab_config(cfg);
 
-    const auto& reloc_cfg = ms_fusion_config_params_.reloc_config_params_;
     RCLCPP_INFO(ros_node_->get_logger(),
-                "IVPS tracking: left grp=%d chn=%d, right grp=%d chn=%d, gray %dx%d; "
-                "IVPS reloc/YOLO: reuses the same tracking grp/chn (CSC to RGB %dx%d), "
-                "timeout=%dms",
+                "IVPS tracking: left grp=%d chn=%d, right grp=%d chn=%d, gray %dx%d, timeout=%dms",
                 ivps_left_grp_, LEFT_PRY_640, ivps_right_grp_, RIGHT_PRY_640, tracking_w, tracking_h,
-                reloc_cfg.resolution_width, reloc_cfg.resolution_height, MSF_IVPS_GRAB_TIMEOUT_MS);
+                MSF_IVPS_GRAB_TIMEOUT_MS);
 }
 
 void MsFusionNode::startImageGrabTimer() {
     if (ivps_grabber_) {
         return;
     }
-    // ## 一路流一个线程：tracking 左/右、reloc 左/右各由 MsfIvpsGrabber 内部一个
-    // ## 独立 std::thread + epoll 常驻抓帧，不再用 wall timer 顺序轮询多路
+    // ## tracking 左/右各由 MsfIvpsGrabber 内部一个独立 std::thread + epoll 常驻抓帧。
     ivps_grabber_ = std::make_unique<MsfIvpsGrabber>();
     ivps_grabber_->setImageCallback(
         [](ImageMessage image_message) { sendImageMessageToManager(image_message); });
@@ -802,77 +762,6 @@ void MsFusionNode::rtkCalibrateCallback(
     response->message = "Calibration successful";
     RCLCPP_INFO(ros_node_->get_logger(),
                 "[rtk_calibrate] Set backend fusion pose to (-12.0, 0.0, yaw=0.0)");
-}
-
-void MsFusionNode::relocCallback(
-    const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
-    std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
-    constexpr double kTimeoutSec = 5.0;
-    if (!requestReloc(kTimeoutSec)) {
-        response->success = false;
-        response->message =
-            "Reloc failed: reloc.enable=false, system not ready, timeout, or YOLO failed";
-        RCLCPP_WARN(ros_node_->get_logger(), "[reloc] On-demand reloc failed");
-        return;
-    }
-    response->success = true;
-    response->message = "Reloc successful";
-    RCLCPP_INFO(ros_node_->get_logger(),
-                "[reloc] On-demand reloc applied via %s",
-                keyframe_loop_cfg_.enable ? "Loop output correction" : "backend world alignment");
-}
-
-void MsFusionNode::publishRelocCorrection(const RelocPoseResult& result) {
-    if (!pub_reloc_correction_) {
-        return;
-    }
-
-    geometry_msgs::msg::PoseArray msg;
-    msg.header.stamp = unixTimeToRosTime(result.timestamp);
-    msg.header.frame_id = "world";
-    msg.poses.resize(3);
-
-    const auto fill_pose = [](geometry_msgs::msg::Pose& pose, const Eigen::Vector3d& position,
-                              const Eigen::Quaterniond& orientation) {
-        pose.position.x = position.x();
-        pose.position.y = position.y();
-        pose.position.z = position.z();
-        pose.orientation.x = orientation.x();
-        pose.orientation.y = orientation.y();
-        pose.orientation.z = orientation.z();
-        pose.orientation.w = orientation.w();
-    };
-    // pose[0] 是 raw world<-base_link，pose[1] 是 reloc 绝对目标。
-    fill_pose(msg.poses[0], result.raw_position, result.raw_orientation);
-    fill_pose(msg.poses[1], result.target_position, result.target_orientation);
-    // pose[2]：不是真实位姿，只用 position.x 携带 RelocTriggerSource 的原始
-    // 序号（0=kNone,1=kBootstrap,2=kPeriodic,3=kService，跟
-    // ms_fusion/common/measurement.h 的定义保持一致），其余字段无意义。
-    // PoseArray 没有专门的标志位字段，这是权宜编码——见
-    // pose_graph_node.cpp::reloc_correction_callback 对应的解码。Loop 那边
-    // 只关心是不是 kService（豁免输出跳变验收），不需要链接 msf_core 就能
-    // 解出这个整数。
-    // position.y 携带请求编号（double 在 2^53 内精确），Loop 在 ACK 里原样带回。
-    msg.poses[2].orientation.w = 1.0;
-    msg.poses[2].position.x = static_cast<double>(static_cast<int>(result.trigger_source));
-    msg.poses[2].position.y = static_cast<double>(result.request_id);
-    pub_reloc_correction_->publish(msg);
-}
-
-void MsFusionNode::relocAckCallback(const std_msgs::msg::UInt64MultiArray::SharedPtr msg) {
-    if (!msg || msg->data.size() != 5) {
-        RCLCPP_WARN(ros_node_->get_logger(), "[reloc] invalid reloc ack: expected 5 values");
-        return;
-    }
-    RelocCorrectionAck ack;
-    ack.request_id = msg->data[0];
-    // 与 unixTimeToRosTime() 互逆（发送端 sec/nsec 截断），manager 按容差比较
-    ack.image_timestamp = static_cast<double>(msg->data[1]) + static_cast<double>(msg->data[2]) * 1e-9;
-    ack.status = msg->data[3] == static_cast<uint64_t>(RelocAckStatus::kAccepted)
-                     ? RelocAckStatus::kAccepted
-                     : RelocAckStatus::kRejected;
-    ack.reason = static_cast<RelocAckReason>(static_cast<int>(msg->data[4]));
-    sendRelocCorrectionAckToManager(ack);
 }
 
 rclcpp::Time MsFusionNode::monotonicRawStamp() {
@@ -1216,38 +1105,6 @@ void MsFusionNode::pubVisionDebugImage(const DebugImageMessage& debug_image) {
     const size_t data_size = bgr.total() * bgr.elemSize();
     img_msg.data.assign(bgr.data, bgr.data + data_size);
     pub_vision_debug_->publish(img_msg);
-}
-
-void MsFusionNode::pubRelocDebugImage(const DebugImageMessage& debug_image) {
-    if (!pub_reloc_debug_ || debug_image.image.empty()) {
-        return;
-    }
-
-    const cv::Mat bgr =
-        debug_image.image.isContinuous() ? debug_image.image : debug_image.image.clone();
-    const auto& topic = ms_fusion_config_params_.reloc_config_params_.debug_image_topic;
-
-    static int last_w = -1;
-    static int last_h = -1;
-    if (bgr.cols != last_w || bgr.rows != last_h) {
-        RCLCPP_INFO(ros_node_->get_logger(),
-                    "[reloc_debug] publish image size %dx%d (topic=%s)", bgr.cols, bgr.rows,
-                    topic.c_str());
-        last_w = bgr.cols;
-        last_h = bgr.rows;
-    }
-
-    sensor_msgs::msg::Image img_msg;
-    img_msg.header.stamp = unixTimeToRosTime(debug_image.timestamp);
-    img_msg.header.frame_id = "cam0";
-    img_msg.height = static_cast<uint32_t>(bgr.rows);
-    img_msg.width = static_cast<uint32_t>(bgr.cols);
-    img_msg.encoding = "bgr8";
-    img_msg.is_bigendian = false;
-    img_msg.step = static_cast<uint32_t>(bgr.cols * bgr.elemSize());
-    const size_t data_size = bgr.total() * bgr.elemSize();
-    img_msg.data.assign(bgr.data, bgr.data + data_size);
-    pub_reloc_debug_->publish(img_msg);
 }
 
 } // namespace ms_fusion

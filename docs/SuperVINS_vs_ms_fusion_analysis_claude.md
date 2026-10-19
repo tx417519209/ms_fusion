@@ -2,7 +2,7 @@
 
 ## 结论
 
-两者思路相同：**学习型局部特征 + LightGlue 描述子匹配 + IMU 滑窗 Ceres 优化**。SuperVINS 是"VINS-Fusion 换前端"的学术实现（ONNX Runtime、GPU/CPU 推理），ms_fusion 是面向 Axera AX650 NPU 板端实时部署、并叠加轮速里程计与重定位的工程化系统。两者算法思想可互相参考，但推理引擎、数据流和工程约束差异较大，不能直接照搬参数或代码。
+两者思路相同：**学习型局部特征 + LightGlue 描述子匹配 + IMU 滑窗 Ceres 优化**。SuperVINS 是"VINS-Fusion 换前端"的学术实现（ONNX Runtime、GPU/CPU 推理），ms_fusion 是面向 Axera AX650 NPU 板端实时部署、并叠加轮速里程计的工程化系统。两者算法思想可互相参考，但推理引擎、数据流和工程约束差异较大，不能直接照搬参数或代码。
 
 ---
 
@@ -30,7 +30,7 @@
 | 立体绑定 | 立体匹配后右目点直接绑定同一左目 `feature_id`（`feature_tracker_dpl.cpp:739-746`） | 语义相同，但右目仅作左目轨迹的附属观测，不维护独立右目长期轨迹（`tracking.cpp:504-524`）；最终接受条件主要是对极约束（`feature_matcher.cpp:663-709`） |
 | 硬件零拷贝 | 无（标准内存 + ONNX 推理） | `IvpsFrameHandle`（提交 `8d3779d` 从 Tracking 拆出）用 `AX_SYS_MemAllocCached` 物理连续内存，`detect(IvpsFramePtr&, ...)` 走 `AX_IVPS_CropResizeVgp` 跳过整帧 memcpy 预处理 |
 | 关键调参 | `matche_score_threshold`（LightGlue 置信度阈值）、`ransacReprojThreshold` | `score_threshold=0.005`、`nms_radius=0`（关闭冗余 CPU NMS）、`border=30`、`lightglue_score_threshold=0.9`（提交 `10b5c1d`/`6d7e623`） |
-| 重定位 | 无独立重定位模块（依赖回环+位姿图） | 独立 `ReLoc` 类：YOLO-OBB 检测 + PnP RANSAC（`calcPose`/`optimizePose`/`checkPose`），`MsFusionManager::requestReloc`/`rtkCalibrate` 触发，结果经 `applyRelocMeasurement` 对齐滑窗状态；`tracking_sync_`/`reloc_sync_` 两个独立 `RawSynchronizer` 队列做左右目时间戳配对，容量已从 4 收紧到 2（提交 `4ca89fc`）以降低配对延迟 |
+| 绝对重定位 | 无独立模块（依赖回环+位姿图） | 无独立模块（依赖回环+位姿图） |
 
 由于 ms_fusion 左目特征数（~47）远低于 SuperVINS（~200~256），匹配阈值、几何过滤和 ID 稳定性对少量点更敏感，日志中的"匹配成功率"在两边含义并不完全对等——SuperVINS 是相对固定分母下的比例，ms_fusion 因 dense 候选集每帧重新检测，分母本身会波动。
 
@@ -74,7 +74,6 @@
 | 维度 | SuperVINS | ms_fusion |
 |---|---|---|
 | 里程计融合 | 无 | `OdomFactor`（轮速计，6 维残差，解析雅可比），可选启用 |
-| 重定位因子 | 无 | `ReLocMonoReprojectionFactor`/`ReLocStereoReprojectionFactor`，把 reloc 结果整体对齐进滑窗 |
 | 优化器 | 原版 VINS-Fusion `Estimator` 类 | 自研 `Optimizer`（`optimizer.h/.cpp`），`addImuFactors`/`addOdomFactors`/`addVisionFactors`/`addPriorFactors` 分模块组织 |
 | 线程模型 | ROS1 topic 驱动，`trackThread`/`processThread`（`processMeasurements()`） | `MsFusionManager` 单例内 `runInsThread`（IMU 频率捷联惯导）+ `runFusionThread`（视觉触发滑窗优化），IMU/ODOM/Vision 三队列 + mutex/condition_variable 解耦 |
 | ROS 版本/架构 | ROS1，三节点：`supervins_estimator`（前端+后端）、`supervins_loop_fusion`（回环）、`camera_models` | ROS2，`msf_core`（算法库）与 `ros_wrapper/ms_fusion`（硬件驱动/编排）、`ros_wrapper/ms_fusion_loop`（独立回环进程）分离 |
@@ -124,7 +123,6 @@ ms_fusion 的回环模块与 SuperVINS 相比，主要差异在于把词典训�
 - 前端检测：`msf_core/src/vision/xfeat_detector.h/.cpp`、`superpoint_detector.h/.cpp`、`npu_score_map_detector.h`、`feature_extractor.h/.cpp`
 - 前端跟踪/匹配：`msf_core/src/vision/tracking.cpp`、`feature_matcher.h/.cpp`
 - 硬件抽象：`msf_core/include/ms_fusion/common/ivps_frame_handle.h`、`ros_wrapper/src/ms_fusion/include/ms_fusion/raw_msf_frame.h`
-- 重定位：`msf_core/src/vision/reloc.h/.cpp`
 - 后端优化：`msf_core/src/optimization/optimizer.h/.cpp`、`msf_core/src/factors/vision_factor.h`
 - 特征管理：`msf_core/src/manager/feature_manager.h/.cpp`
 - 核心编排：`msf_core/src/manager/ms_fusion_manager.cpp`

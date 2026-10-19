@@ -71,19 +71,7 @@ cv::Mat toBgr(const cv::Mat& image) {
     return bgr;
 }
 
-cv::Scalar classColor(int class_id) {
-    static const cv::Scalar palette[] = {
-        {255, 128, 0},   {0, 255, 255},   {255, 0, 255},   {0, 128, 255},
-        {128, 255, 0},   {255, 255, 0},   {0, 255, 128},   {128, 0, 255},
-        {255, 64, 64},   {64, 255, 64},   {64, 64, 255},   {255, 128, 128},
-        {128, 255, 128}, {128, 128, 255}, {200, 200, 200},
-    };
-    const int n = static_cast<int>(sizeof(palette) / sizeof(palette[0]));
-    return palette[class_id >= 0 ? (class_id % n) : 0];
-}
-
-// 按 track ID 生成固定色相的颜色（同一 ID 帧间颜色不变），供
-// drawTrackingStereoDebug / drawStereoMatchDebug 共用
+// 按 track ID 生成固定色相的颜色（同一 ID 帧间颜色不变）。
 cv::Scalar idColor(size_t id) {
     const int hue = static_cast<int>((id * 47) % 180);
     cv::Mat hsv(1, 1, CV_8UC3, cv::Scalar(hue, 255, 255));
@@ -91,29 +79,6 @@ cv::Scalar idColor(size_t id) {
     cv::cvtColor(hsv, bgr, cv::COLOR_HSV2BGR);
     const cv::Vec3b& px = bgr.at<cv::Vec3b>(0, 0);
     return cv::Scalar(px[0], px[1], px[2]);
-}
-
-void drawObbLinesOnImage(cv::Mat& image, const std::vector<std::vector<ObbLine>>& obb_lines) {
-    for (const auto& class_lines : obb_lines) {
-        for (const auto& line : class_lines) {
-            const cv::Scalar color = classColor(line.class_id);
-            cv::line(image, line.start_point, line.end_point, color, 2, cv::LINE_AA);
-            cv::circle(image, line.start_point, 3, color, -1, cv::LINE_AA);
-            cv::circle(image, line.end_point, 3, color, -1, cv::LINE_AA);
-        }
-    }
-}
-
-void drawRelocKeypointsOnImage(cv::Mat& image,
-                               const std::vector<int>& feature_ids,
-                               const std::vector<cv::Point2f>& feature_pts) {
-    const size_t n = std::min(feature_ids.size(), feature_pts.size());
-    for (size_t i = 0; i < n; ++i) {
-        const auto& pt = feature_pts[i];
-        cv::circle(image, pt, 5, cv::Scalar(0, 255, 255), 2, cv::LINE_AA);
-        cv::putText(image, "KP" + std::to_string(feature_ids[i]), pt + cv::Point2f(4.f, -4.f),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.45, cv::Scalar(0, 255, 255), 1, cv::LINE_AA);
-    }
 }
 
 void putPanelTitle(cv::Mat& panel, const std::string& title) {
@@ -238,56 +203,6 @@ cv::Mat Drawer::drawStereoMatchDebug(const cv::Mat& image0, const cv::Mat& image
     }
 
     putPanelTitle(output, "stereo MNN match");
-    return output;
-}
-
-cv::Mat Drawer::drawRelocStereoDebug(const cv::Mat& image0,
-                                     const cv::Mat& image1,
-                                     const RelocDebugInfo& reloc) {
-    cv::Mat left = toBgr(image0);
-    cv::Mat right = toBgr(image1);
-    if (left.empty() || right.empty()) {
-        return cv::Mat();
-    }
-
-    drawObbLinesOnImage(left, reloc.obb_lines_cam0);
-    drawObbLinesOnImage(right, reloc.obb_lines_cam1);
-    drawRelocKeypointsOnImage(left, reloc.feature_ids_cam0, reloc.feature_pts_cam0);
-    drawRelocKeypointsOnImage(right, reloc.feature_ids_cam1, reloc.feature_pts_cam1);
-
-    cv::Mat output(left.rows, left.cols + right.cols, CV_8UC3, cv::Scalar(0, 0, 0));
-    left.copyTo(output.colRange(0, left.cols));
-    right.copyTo(output.colRange(left.cols, left.cols + right.cols));
-    putPanelTitle(output, "reloc lines + kp");
-    return output;
-}
-
-cv::Mat Drawer::composeVisionDebugImage(const TrackingDebugInfo& tracking,
-                                        const RelocDebugInfo* reloc,
-                                        const bool draw_reloc) {
-    cv::Mat tracking_panel = drawTrackingStereoDebug(
-        tracking.image0, tracking.image1, tracking.pts_left, tracking.pts_right, tracking.ids,
-        tracking.detect_keypoints);
-    if (tracking_panel.empty()) {
-        return cv::Mat();
-    }
-
-    if (!draw_reloc || reloc == nullptr || reloc->image0.empty() || reloc->image1.empty()) {
-        return tracking_panel;
-    }
-
-    cv::Mat reloc_panel = drawRelocStereoDebug(reloc->image0, reloc->image1, *reloc);
-    if (reloc_panel.empty()) {
-        return tracking_panel;
-    }
-
-    const int out_w = std::max(tracking_panel.cols, reloc_panel.cols);
-    const int out_h = tracking_panel.rows + reloc_panel.rows;
-    cv::Mat output(out_h, out_w, CV_8UC3, cv::Scalar(32, 32, 32));
-    tracking_panel.copyTo(output.rowRange(0, tracking_panel.rows).colRange(0, tracking_panel.cols));
-    reloc_panel.copyTo(
-        output.rowRange(tracking_panel.rows, tracking_panel.rows + reloc_panel.rows)
-            .colRange(0, reloc_panel.cols));
     return output;
 }
 

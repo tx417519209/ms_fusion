@@ -20,7 +20,6 @@
 namespace ms_fusion {
 
 // 声明类
-class ReLoc;
 class Tracking;
 class GenericCamera;
 
@@ -130,9 +129,6 @@ private:
 
     // 特征点跟踪的指针对象
     std::shared_ptr<Tracking> tracking_ptr_ = nullptr;
-
-    // 重定位的特征点指针
-    std::shared_ptr<ReLoc> reloc_ptr_ = nullptr;
 
     // 当前类用的数据（是否实时处理图片，imu是否使用中值做积分，imu和相机的时间差, IMU需要插值的阈值）
     bool vision_realtime_force_ = true;

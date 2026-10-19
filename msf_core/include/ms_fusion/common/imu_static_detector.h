@@ -94,7 +94,7 @@ public:
         return window_.size() < 2 ? 0.0 : window_.back().timestamp - window_.front().timestamp;
     }
 
-    // 重置防抖计数（比如重定位/大幅运动后想强制重新累计）
+    // 重置防抖计数（比如大幅运动后想强制重新累计）
     void reset();
 
     // 清空内部滑窗（比如系统重启/重新初始化时）

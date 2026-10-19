@@ -1405,7 +1405,7 @@ flowchart TB
 
   <h3>输出层平滑（<code>output_smooth_tau_s</code>，默认关闭）</h3>
   <p>
-    reloc 落地或位姿图优化会让输出位姿一次性阶跃。设 <code>output_smooth_tau_s = τ &gt; 0</code> 后，
+    位姿图优化会让输出位姿一次性阶跃。设 <code>output_smooth_tau_s = τ &gt; 0</code> 后，
     发布的 <code>/odometry</code> = 未平滑位姿 + 残差：落地那一帧吸收阶跃（输出保持连续），
     之后残差按 <code>exp(-dt/τ)</code> 衰减（<code>dt</code> 取 <code>/odometry_vio</code> 的消息时间戳；
     τ=2 s 约 6 s 消除 95%）。
@@ -1413,11 +1413,10 @@ flowchart TB
   <ul>
     <li>同一把锁内<strong>先衰减旧残差、再吸收新阶跃</strong>：<code>dp = p_old + dp_decayed − p_new</code>，
       <code>dyaw = wrap(yaw_old + dyaw_decayed − yaw_new)</code>；新吸收的部分当帧不再衰减。连续两次校正自然叠加。</li>
-    <li>启动后第一次 reloc 落地、<code>/reloc</code> 手动触发：显式复位标记（与锚点更新同锁），残差清零、直接输出新的绝对位姿。</li>
     <li>时间戳重复不衰减；回退时重置时间基准，不会出现负 dt。状态只由 <code>/odometry_vio</code> 发布路径推进。</li>
-    <li>跳变验收、ACK、锚点、位姿图都仍使用<strong>未平滑位姿</strong>；平滑只影响发布的 <code>/odometry</code>。</li>
+    <li>位姿图仍使用<strong>未平滑位姿</strong>；平滑只影响发布的 <code>/odometry</code>。</li>
     <li>本节点不发布 TF。消息里的 <code>twist.linear</code> 是 <code>/odometry_vio</code> 的世界系速度，
-      经 <code>w_r_vio</code>、<code>r_drift</code>（含 reloc 外层变换）旋转到修正后的世界系（与位置同一旋转，无平移）；
+      经 <code>w_r_vio</code>、<code>r_drift</code> 旋转到修正后的世界系（与位置同一旋转，无平移）；
       平滑开启时仍按未平滑的修正旋转，<strong>不是</strong>平滑位置的导数，衰减期间两者相差约 |残差|/τ。上游未填角速度。</li>
     <li>代价：校正后约 3τ 内输出相对未平滑位姿有滞后，heading 尚未收敛时下游会看到带残差的朝向。
       离线仿真（τ=2 s）RPE 平移 0.19→0.14 m 等，整体 ATE/RMSE 几乎不变，这不代表滞后期内没有偏差。</li>
@@ -1583,8 +1582,7 @@ flowchart TB
 
   subgraph FUS_T["runFusionThread · SCORE total=145.2ms"]
     VQ --> SYNC["getCurrVisionMeasurement<br/>select.wait_outside=17.7ms"]
-    SYNC --> RELOC["tryConsumeReloc<br/>本窗 reloc=0.0ms"]
-    RELOC --> ST{"ms_fusion_state_"}
+    SYNC --> ST{"ms_fusion_state_"}
 
     ST -->|INITIALIZING| INIT["Initializer"]
     INIT --> PRIOR["constructPriorInfo"]
@@ -1731,7 +1729,7 @@ flowchart TB
         <ul>
           <li>校正后时间戳 <code>t' = t + td_cam_to_imu_</code></li>
           <li>若尺寸已是 tracking 尺寸则跳过再缩放</li>
-          <li>调用 <code>Tracking::processImage</code>；可选并行 reloc 取 GRP 9/10 RGB</li>
+          <li>调用 <code>Tracking::processImage</code></li>
         </ul>
       </div>
       <div class="io-label">Timing 日志</div>
@@ -1891,7 +1889,7 @@ flowchart TB
         <ul>
           <li><code>has_loop_descriptors</code> / <code>loop_keypoints</code> / <code>loop_descriptors</code></li>
           <li><code>has_loop_landmark_descriptors</code> / <code>loop_landmark_ids</code> / <code>loop_landmark_keypoints</code> / <code>loop_landmark_descriptors</code></li>
-          <li>另含：<code>track_feat_info</code>、可选 reloc、timestamp</li>
+          <li>另含：<code>track_feat_info</code>、timestamp</li>
         </ul>
       </div>
       <div class="io-label">Timing 日志</div>

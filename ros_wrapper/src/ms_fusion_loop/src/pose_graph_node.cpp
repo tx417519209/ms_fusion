@@ -62,9 +62,6 @@ Vector3d last_t(-100, -100, -100);
 double last_image_time = -1;
 
 rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_odometry_rect;
-// reloc 修正的处理结果回给 ms_fusion（话题 = reloc_correction_topic + "/ack"），
-// 见 publishRelocAck()
-rclcpp::Publisher<std_msgs::msg::UInt64MultiArray>::SharedPtr pub_reloc_ack;
 rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub_camera_pose_visual;
 
 // Keep subscriptions alive for the process lifetime (create_subscription return must be stored).
@@ -306,98 +303,6 @@ void pose_callback(const nav_msgs::msg::Odometry::SharedPtr pose_msg) {
   pushBounded(pose_buf, pose_msg);
 }
 
-// ACK 载荷：[request_id, stamp_sec, stamp_nanosec, status, reason]，stamp 原样取自
-// 修正消息 header（图像时刻）。status/reason 与 msf_core 的 RelocAckStatus/
-// RelocAckReason 序号一致：status 1=accepted 2=rejected；reason 0=none
-// 1=jump_too_large 2=invalid_pose。
-enum RelocAckCode : uint64_t {
-  kRelocAckAccepted = 1,
-  kRelocAckRejected = 2,
-  kRelocAckReasonNone = 0,
-  kRelocAckReasonJump = 1,
-  kRelocAckReasonInvalid = 2,
-};
-
-void publishRelocAck(const geometry_msgs::msg::PoseArray &msg, uint64_t request_id,
-                     uint64_t status, uint64_t reason) {
-  if (!pub_reloc_ack) {
-    return;
-  }
-  std_msgs::msg::UInt64MultiArray ack;
-  ack.data = {request_id, static_cast<uint64_t>(static_cast<uint32_t>(msg.header.stamp.sec)),
-              static_cast<uint64_t>(msg.header.stamp.nanosec), status, reason};
-  pub_reloc_ack->publish(ack);
-}
-
-void reloc_correction_callback(
-    const geometry_msgs::msg::PoseArray::SharedPtr pose_array_msg) {
-  // poses[2] 不是真实位姿，只用 position.x 携带 RelocTriggerSource 的原始
-  // 序号（见 ms_fusion_node.cpp::publishRelocCorrection 对应的编码：
-  // 0=kNone,1=kBootstrap,2=kPeriodic,3=kService），所以这里要求正好 3 个。
-  // 消息结构不对时拿不到 request_id，不回 ACK（ms_fusion 侧按超时处理）
-  if (!pose_array_msg || pose_array_msg->poses.size() != 3) {
-    MSF_WLOGF("[ms_fusion_loop] Invalid reloc correction: expected exactly 3 poses\n");
-    return;
-  }
-  // poses[2].position.y 携带请求编号（见 ms_fusion_node.cpp::publishRelocCorrection；
-  // 旧版本发送端为 0）
-  const double request_id_value = pose_array_msg->poses[2].position.y;
-  const uint64_t request_id =
-      std::isfinite(request_id_value) && request_id_value > 0.0
-          ? static_cast<uint64_t>(std::llround(request_id_value))
-          : 0;
-
-  const auto parse_pose = [](const geometry_msgs::msg::Pose &pose,
-                             Vector3d &position, Matrix3d &rotation) {
-    position = Vector3d(pose.position.x, pose.position.y, pose.position.z);
-    Quaterniond q(pose.orientation.w, pose.orientation.x,
-                  pose.orientation.y, pose.orientation.z);
-    if (!position.allFinite() || !q.coeffs().allFinite() || q.norm() < 1e-6) {
-      return false;
-    }
-    q.normalize();
-    rotation = q.toRotationMatrix();
-    return true;
-  };
-
-  Vector3d raw_t;
-  Vector3d target_t;
-  Matrix3d raw_R;
-  Matrix3d target_R;
-  if (!parse_pose(pose_array_msg->poses[0], raw_t, raw_R) ||
-      !parse_pose(pose_array_msg->poses[1], target_t, target_R)) {
-    MSF_WLOGF("[ms_fusion_loop] Invalid reloc correction: non-finite pose or quaternion\n");
-    publishRelocAck(*pose_array_msg, request_id, kRelocAckRejected, kRelocAckReasonInvalid);
-    return;
-  }
-  // kService 的序号是 3（见上面注释）——/reloc 手动触发，操作员主动确认机器
-  // 实际位置，无条件豁免输出跳变验收。
-  constexpr int kServiceTriggerSourceOrdinal = 3;
-  const int trigger_source_ordinal =
-      static_cast<int>(std::lround(pose_array_msg->poses[2].position.x));
-  const bool is_service_confirmation = trigger_source_ordinal == kServiceTriggerSourceOrdinal;
-
-  // service 触发无条件放行；否则只有不超限（或者还没有锚点）才落地。验收与落地
-  // 在 applyRelocCorrection() 内原子完成，ACK 用它的最终结果。
-  const PoseGraph::RelocJumpCheck result =
-      posegraph.applyRelocCorrection(stampSec(pose_array_msg->header.stamp), raw_t, raw_R,
-                                     target_t, target_R, !is_service_confirmation);
-  if (result.invalid) {
-    publishRelocAck(*pose_array_msg, request_id, kRelocAckRejected, kRelocAckReasonInvalid);
-    return;
-  }
-  if (!result.applied) {
-    MSF_WLOGF("%s[ms_fusion_loop] reloc correction REJECTED (jump too large): "
-              "delta_position_m=%.3f delta_yaw_deg=%.2f limit_position_m=%.2f "
-              "limit_yaw_deg=%.2f%s\n",
-              ms_fusion::kLogRed, result.delta_position_m, result.delta_yaw_deg,
-              result.limit_position_m, result.limit_yaw_deg, ms_fusion::kLogColorReset);
-    publishRelocAck(*pose_array_msg, request_id, kRelocAckRejected, kRelocAckReasonJump);
-    return;
-  }
-  publishRelocAck(*pose_array_msg, request_id, kRelocAckAccepted, kRelocAckReasonNone);
-}
-
 void vio_callback(const nav_msgs::msg::Odometry::SharedPtr pose_msg) {
   TicToc total_timer;
   LoopVioTiming timing;
@@ -448,7 +353,7 @@ void vio_callback(const nav_msgs::msg::Odometry::SharedPtr pose_msg) {
   nav_msgs::msg::Odometry odometry = *pose_msg;
   odometry.header.frame_id = "world";
   // twist.linear 是 /odometry_vio 的世界系线速度（见 ms_fusion_node.cpp::odomInfoToRosMsg）。
-  // 位置经 w_r_vio、r_drift（含 reloc 外层变换）旋转到修正后的世界系，速度要同样旋转，
+  // 位置经 w_r_vio、r_drift 旋转到修正后的世界系，速度要同样旋转，
   // 否则 yaw 漂移较大时速度方向与修正后的位姿对不上。纯旋转，不含平移；上游没有填
   // 角速度，这里不处理。output_smooth 开启时用 smoothOutputPose 同一份快照里未平滑的修正旋转。
   {
@@ -848,8 +753,6 @@ int main(int argc, char **argv) {
   auto odometry_rect_pub_qos = makeReliabilityQos(
       g_loop_config.odometry_rect_qos,
       static_cast<size_t>(g_loop_config.odometry_rect_qos_depth));
-  auto reloc_correction_qos =
-      rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
   if (g_loop_config.save_image) {
     g_pub_match_img =
         g_node->create_publisher<sensor_msgs::msg::Image>("match_image", pub_qos);
@@ -860,10 +763,6 @@ int main(int argc, char **argv) {
   }
   pub_odometry_rect = g_node->create_publisher<nav_msgs::msg::Odometry>(
       g_loop_config.odometry_rect_topic, odometry_rect_pub_qos);
-  // ACK 不需要 transient_local：只对当前在等的请求有意义
-  pub_reloc_ack = g_node->create_publisher<std_msgs::msg::UInt64MultiArray>(
-      g_loop_config.reloc_correction_topic + "/ack",
-      rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile());
 
   std::filesystem::create_directories(POSE_GRAPH_SAVE_PATH);
   if (g_loop_config.save_loop_path) {
@@ -908,16 +807,13 @@ int main(int argc, char **argv) {
       g_loop_config.keyframe_descriptors_topic, sub_qos, descriptors_callback));
   g_subscriptions.push_back(g_node->create_subscription<nav_msgs::msg::Odometry>(
       g_loop_config.raw_odometry_topic, odometry_sub_qos, vio_callback));
-  g_subscriptions.push_back(g_node->create_subscription<geometry_msgs::msg::PoseArray>(
-      g_loop_config.reloc_correction_topic, reloc_correction_qos,
-      reloc_correction_callback));
   // ms_fusion publishes sensor_msgs/PointCloud (not PointCloud2) on this topic.
   g_subscriptions.push_back(g_node->create_subscription<sensor_msgs::msg::PointCloud>(
       g_loop_config.keyframe_point_topic, sub_qos, point_callback));
 
   MSF_ILOGF("[ms_fusion_loop] running:\n"
             "  config: %s\n"
-            "  subscribe: pose=%s point=%s desc=%s odom=%s extrinsic=%s reloc=%s image=%s\n"
+            "  subscribe: pose=%s point=%s desc=%s odom=%s extrinsic=%s image=%s\n"
             "  odom qos: input=%s/depth%d corrected_output=%s/depth%d\n"
             "  skip_first=%d skip_dis=%.2f use_imu=%d save_image=%d\n"
             "  resource: verbose=%d rviz=%d camera_marker_stride=%d sync_queue=%d loop_kf_limit=%d\n"
@@ -926,7 +822,6 @@ int main(int argc, char **argv) {
             "  pose gate: yaw<%.1fdeg t<%.2fm rmse<%.2fpx inlier_ratio>=%.2f min_loop_num=%d lowe_ratio=%.2f\n"
             "  loop dedup: cooldown_keyframes=%d dedup_radius=%d dedup_window_keyframes=%d "
             "max_verified_candidates=%d\n"
-            "  defer optimize while reloc fresh: %.1fs (<=0 off)\n"
             "  RViz (Fixed Frame=world; enabled only when loop.enable_rviz=true):\n"
             "    Path:          /pose_graph_path  /base_path  /path_1\n"
             "    MarkerArray:   /pose_graph  /camera_pose_visual\n"
@@ -936,7 +831,6 @@ int main(int argc, char **argv) {
             config_file.c_str(), g_loop_config.keyframe_pose_topic.c_str(),
             g_loop_config.keyframe_point_topic.c_str(), g_loop_config.keyframe_descriptors_topic.c_str(),
             g_loop_config.raw_odometry_topic.c_str(), g_loop_config.extrinsic_topic.c_str(),
-            g_loop_config.reloc_correction_topic.c_str(),
             use_image ? g_loop_config.image_topic.c_str() : "(off)",
             g_loop_config.odometry_sub_qos.c_str(), g_loop_config.odometry_sub_qos_depth,
             g_loop_config.odometry_rect_qos.c_str(), g_loop_config.odometry_rect_qos_depth,
@@ -953,7 +847,6 @@ int main(int argc, char **argv) {
             g_loop_config.min_loop_num, g_loop_config.lowe_ratio, g_loop_config.loop_cooldown_keyframes,
             g_loop_config.loop_cooldown_dedup_radius, g_loop_config.loop_dedup_window_keyframes,
             g_loop_config.loop_max_verified_candidates,
-            g_loop_config.defer_optimize_reloc_fresh_s,
             g_loop_config.odometry_rect_topic.c_str(), g_loop_config.raw_odometry_topic.c_str(),
             g_loop_config.odometry_rect_topic.c_str(), g_loop_config.odometry_rect_qos.c_str());
   fflush(stdout);
@@ -976,7 +869,6 @@ int main(int argc, char **argv) {
   posegraph.shutdown();
   g_subscriptions.clear();
   pub_odometry_rect.reset();
-  pub_reloc_ack.reset();
   pub_camera_pose_visual.reset();
   g_pub_match_img.reset();
   g_node.reset();

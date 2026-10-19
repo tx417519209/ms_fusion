@@ -213,7 +213,7 @@ struct SuperPointConfigParams {
     // 是否打印硬件预处理耗时
     bool enable_preprocess_timing = false;
 
-    // 是否发布特征跟踪 + reloc 可视化图像（需 ROS 节点注册回调）
+    // 是否发布特征跟踪可视化图像（需 ROS 节点注册回调）
     bool publish_debug_image = false;
     std::string debug_image_topic = "ms_fusion/vision_debug";
 };
@@ -536,7 +536,7 @@ struct StaticDetectorConfigParams {
     int std_smoothing_window = 5;
 };
 
-// Initializer（视觉重定位辅助初始化）专属配置参数。静止判据阈值与
+// Initializer（初始化）专属配置参数。静止判据阈值与
 // StaticDetectorConfigParams 里同名字段语义相同，但各自独立配置——初始化门控
 // 和运行时检测器（喂零速伪观测）不再共用同一套数值，允许分开调参。
 struct InitializerConfigParams {
@@ -562,142 +562,17 @@ struct InitializerConfigParams {
     int std_smoothing_window = 5;
 
     // Initializer 里凑齐一个视觉观测窗口所需的时长（s）：非重叠地累积
-    // vision_measurement_buff_，凑够这个时长才检查该窗口内是否有过一次成功
-    // reloc、再走 checkImuStatic()。和 StaticDetectorConfigParams::runtime_window_s
+    // vision_measurement_buff_，凑够这个时长后再走 checkImuStatic()。
+    // 和 StaticDetectorConfigParams::runtime_window_s
     // 是两个独立维度（后者是运行时滚动平滑窗口，这个是初始化门控的单窗时长）。
     double init_window_s = 0.20;
 
     // 初始化超时（s）：从第一帧图像真正到达（而不是 INITIALIZING 状态一进入）
     // 开始计时——开机到相机出第一帧图像之间可能有几秒延迟，这段空等时间不该
-    // 扣进超时预算。超过这个时长还没完成初始化就保存 reloc 图片供离线分析、
-    // 打印超时消息并退出进程。静止判据从静止转为运动时会重新计时（可能是在
+    // 扣进超时预算。超过这个时长还没完成初始化就打印超时消息并退出进程。
+    // 静止判据从静止转为运动时会重新计时（可能是在
     // 尝试挪到别的位置初始化）。<=0 表示不启用这个超时。
     double init_timeout_s = 30.0;
-};
-
-// 重定位配置参数
-struct RelocConfigParams {
-    // 读取配置参数
-    void loadConfigFromYAML(const YAML::Node& reloc_node);
-
-    // 打印配置参数
-    void printConfig() const;
-
-    // 是否启用重定位：控制 YOLO 模型加载、初始化与周期/手动重定位路径。
-    bool enable = false;
-
-    // 模型的路径
-    std::string model_path;
-
-    // 重定位输入分辨率 [width, height]，支持 640x384 / 640x640 / 512x512
-    int resolution_width = 640;
-    int resolution_height = 384;
-
-    // YOLO 前是否把 resize+padding 图像去畸变。有效内容固定从 (0,0) 开始，
-    // 空白仅补在右侧/底部；去畸变后的像素由新的零畸变虚拟相机解释。
-    bool enable_undistort = false;
-
-    // cv::getOptimalNewCameraMatrix 的 alpha：0 裁掉无效边界，1 尽量保留原视场。
-    double undistort_alpha = 1.0;
-
-    // 是否发布 YOLO-OBB reloc 可视化；底图与实际 NPU 输入处于同一像素域。
-    bool publish_debug_image = false;
-    std::string debug_image_topic = "ms_fusion/reloc_debug";
-
-    // 置信度阈值
-    float conf_threshold;
-
-    // NMS阈值
-    float nms_threshold;
-
-    // 类别数
-    int num_classes;
-    
-    // 最大检测数
-    int max_det;
-
-    // YOLO-OBB reloc 模型左右目推理各自的 NPU 亲和性（AX_ENGINE_NPU_SET_T 位掩码），
-    // 和 xfeat.npu_affinity_*/lightglue_npu_affinity_* 是同一套机制：多个 NPU 模型
-    // 分散到不同核心，避免和 tracking 侧的 xfeat/LightGlue 抢占同一块 NPU 核心。
-    std::uint32_t left_npu_affinity = 0b010;
-    std::uint32_t right_npu_affinity = 0b100;
-
-    // ---- 周期触发节奏（原 reloc_backend 字段，现场调参项） ----
-
-    // 周期触发间隔（s），按视觉帧时间戳计时，不用墙钟；<= 0 表示关闭周期触发
-    // （needRelocYolo() 不会因为周期触发而变真）。绝对修正落到 Loop 输出层
-    // 锚点，见 MsFusionManager::consumePeriodicRelocMeasurement。
-    //
-    // loop.enable=true 时，这个值是"距上次 Manager 验收并发布的等待时长"，不是"距上
-    // 次尝试的等待时长"：等待期满后进入 pending，pending 期间按
-    // periodic_reloc_retry_interval_s 的节奏持续重试，直到 Manager 验收并发布一次才清
-    // pending、重新计时。失败（YOLO/PnP没出解、checkPose 未通过、或跟 VIO
-    // 预测跳变过大被 Manager 拒绝）不消费这个 period_s 的等待。
-    // loop.enable=false 时不触发周期 reloc；初始化和 /reloc service 不受影响。
-    double periodic_reloc_period_s = 0.0;
-
-    // 仅 loop.enable=true 时使用：pending 状态下的重试间隔（s，必须 > 0），
-    // 同样按视觉帧时间戳计时。
-    double periodic_reloc_retry_interval_s = 1.0;
-
-    // 请求（图像采集）到最终 apply（MsFusionManager::applyRelocCorrectionLocked
-    // 实际执行）之间允许的最大单调时钟延迟（s）——覆盖周期触发、/reloc service
-    // 和初始化硬对齐三条路径（都走 applyRelocCorrectionLocked），超过就拒绝，
-    // 不 apply、不发布，不区分来源（延迟过大意味着这次修正对应的位置很可能
-    // 已经过时，跟是谁触发的无关）。<=0 表示不启用。
-    // 初始值参照 2026-09-16 现场日志里的 apply_delay_s 分布定的（正常
-    // 0.1~0.6s，一次 1.6s 的峰值），留出余量。
-    double reloc_max_apply_delay_s = 2.0;
-
-    // 输出跳变验收（仅 use_loop_route==false 的直接硬对齐路径用，见
-    // MsFusionManager::applyRelocCorrectionLocked）：跳变超过任一上限就拒绝这次
-    // 修正（不 apply、不发布），只打日志说明原因。<=0 表示不启用。
-    // trigger_source==kService（/reloc 手动触发，操作员主动确认机器实际位置）
-    // 时无条件豁免，不受这两个值限制。
-    // 值来自 yaml 的 loop.max_correction_position_m/max_correction_yaw_deg，不在
-    // reloc 段单独配置：这条硬对齐路径没有 Loop 输出层，raw 就是最终状态本身，
-    // 跟 Loop 侧 PoseGraph::evaluateRelocJump 用的是同一语义的限制，直接复用
-    // 同一份配置，避免两处各维护一份数。loop_enabled_==true 时走 Loop 输出层，
-    // 这两个值不生效，验收改由 evaluateRelocJump 负责。
-    double max_correction_position_m = 1.5;
-    double max_correction_yaw_deg = 5.0;
-
-    // ---- checkPose() 位姿验收门槛（现场调参项，见 reloc.cpp:ReLoc::checkPose） ----
-
-    // 第二步高度门：|z|（虚拟IMU系，m）超过这个值就拒绝
-    double max_height_m = 0.3;
-
-    // 第三步反投影误差门：平均反投影误差（px）达到/超过这个值就拒绝
-    double max_reprojection_error_px = 6.0;
-
-    // 第四步非共面（球网高度点）成对观测门槛：左右目都命中的非共面地标数少于
-    // 这个值就拒绝。<=0 表示不启用。
-    int min_offplane_stereo_pairs = 0;
-
-    // ---- 2 点直立解假设评分（见 reloc.cpp:ReLoc::calcPose） ----
-
-    // 内点判定角度阈值公式里的像素尺度参数（原名 ransac_pixel_threshold_px）：
-    // threshold = 1-cos(atan(sqrt(2)*px/focal))，不是逐点重投影误差的严格
-    // 上限，是这个角度阈值公式的尺度参数。
-    double inlier_pixel_threshold_px = 20.0;
-
-    // 最佳假设的最低支持数（主观测通过角度阈值的独立地标数），低于则整帧拒绝。
-    // 回放实测支持数 4~5 的结果 8 个里 7 个是错解，≥6 时错解约 2%。
-    int min_support = 6;
-
-    // 周期 reloc 多帧确认（仅 loop.enable=true 的周期请求，初始化硬对齐和 /reloc
-    // 手动触发不做）：同一周期请求内连续 confirm_frames 个有效结果两两一致才发布
-    // 最后一个。两个结果"一致"指：用前一个的"地图←VIO"偏移把后一个的 raw 位姿
-    // 预测到地图系，与后一个 target 比较，位置差 ≤ confirm_max_position_m、航向差
-    // ≤ confirm_max_yaw_deg；且相邻两个有效结果间隔 ≤ confirm_max_gap_s。未凑够时
-    // 请求保持 pending，按 retry_interval_s 继续重试。默认开启、3 帧（回放实测单帧
-    // 错解约 5%，3 帧时被发布的错解为 0，等待时间与 2 帧相当）。
-    bool periodic_multi_frame_confirm = true;
-    int confirm_frames = 3;
-    double confirm_max_position_m = 1.0;
-    double confirm_max_yaw_deg = 4.0;
-    double confirm_max_gap_s = 1.2;
-
 };
 
 // 系统的配置参数
@@ -711,8 +586,7 @@ struct MsFusionConfigParams {
     // 打印对应的配置参数
     void printConfig() const;
 
-    // 根节点 loop.enable；决定是否启用 Loop 输出层及周期 reloc 绝对修正。
-    // Loop 关闭时周期 reloc 不触发，手动 /reloc 仍可直接对齐融合后端。
+    // 根节点 loop.enable；决定是否启用视觉回环输出层。
     bool loop_enabled_ = false;
 
     // 基础的配置参数
@@ -739,10 +613,6 @@ struct MsFusionConfigParams {
     // Initializer（初始化阶段）的配置参数，静止判据阈值与运行时检测器独立配置
     InitializerConfigParams initializer_config_params_;
 
-    // 重定位的配置参数（含 checkPose 门槛、初始化融合、周期触发节奏——原来
-    // 分散在 RelocBackendConfigParams 和多处硬编码常量里，现在统一到这一节）
-    RelocConfigParams reloc_config_params_;
-
     // EIGEN的数据对齐
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
@@ -753,7 +623,7 @@ struct ConfigUtils {
     static Eigen::Matrix4d readEigenMatrix4dFromYAML(const YAML::Node& matrix_node);
 
     // VIO tracking canvas 尺寸。相机有效内容保持宽高比并放在左上角，额外区域
-    // 只在右侧/底部补齐；reloc 的可选去畸变使用独立相机模型。
+    // 只在右侧/底部补齐。
     static void computeTrackingImageSize(const MsFusionConfigParams& config, int& width,
                                          int& height) {
         const auto& cam_res = config.camera_config_params_.cam_resolutions.at(0);
@@ -771,7 +641,7 @@ struct ConfigUtils {
         const int scaled_h = orig_h / df;
         const int pad_bottom = config.tracking_config_params_.drop_bottom_feature_rows;
 
-        // Tracking geometry must not depend on the reloc model resolution. For a 1920x1080 source,
+        // For a 1920x1080 source,
         // 1920x1080 / 3 gives 640x360 calibrated content and the configured 24 invalid
         // bottom rows make the IVPS canvas 640x384.
         width = scaled_w;

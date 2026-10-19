@@ -56,20 +56,8 @@ void setPubKeyframeLoopCallback(const pubKeyframeLoopFunc& func) {
     MsFusionManager::SnglPtr()->pushKeyframeLoopPubCallback(func);
 }
 
-void setPubRelocCorrectionCallback(const pubRelocCorrectionFunc& func) {
-    MsFusionManager::SnglPtr()->pushRelocCorrectionPubCallback(func);
-}
-
-void sendRelocCorrectionAckToManager(const RelocCorrectionAck& ack) {
-    MsFusionManager::SnglPtr()->onRelocCorrectionAck(ack);
-}
-
 bool rtkCalibrate() {
     return MsFusionManager::SnglPtr()->rtkCalibrate();
-}
-
-bool requestReloc(double timeout_sec, RelocPoseResult* result) {
-    return MsFusionManager::SnglPtr()->requestReloc(timeout_sec, result);
 }
 
 } // namespace ms_fusion

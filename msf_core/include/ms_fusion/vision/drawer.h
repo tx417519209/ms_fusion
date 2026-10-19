@@ -46,15 +46,6 @@ public:
                                         const std::vector<cv::Point2f>& pts1,
                                         const std::vector<size_t>& ids);
 
-    // YOLO-OBB 线段 + 重定位特征点可视化
-    static cv::Mat drawRelocStereoDebug(const cv::Mat& image0,
-                                        const cv::Mat& image1,
-                                        const RelocDebugInfo& reloc);
-
-    // 拼接 tracking 与 reloc 可视化面板
-    static cv::Mat composeVisionDebugImage(const TrackingDebugInfo& tracking,
-                                           const RelocDebugInfo* reloc,
-                                           bool draw_reloc);
 };
 
 } // namespace ms_fusion

@@ -133,15 +133,15 @@ static_detector:
                                      # 是在补偿 getImuMeasurementSeries 关键帧边界插值样本
                                      # am/wm 未赋值（默认零向量）拉低比力均值的 bug，已在
                                      # ins_mech.cpp:imuInterpolation 修复，改回默认值
-  confirm_windows: 10                  # 连续通过多少个窗口才确认静止（原 5，调大让静止/重定位确认更久更稳，
-                                       # 副作用是初始化耗时变长；reloc_measurement_buff_ 现在跟 streak 同步，
-                                       # 窗口数越多攒的重定位融合样本也越多）
+  confirm_windows: 10                  # 连续通过多少个窗口才确认静止（原 5，调大让静止确认更久更稳，
+                                       # 副作用是初始化耗时变长；初始化观测窗口与 streak 同步，
+                                       # 窗口数越多静止判定越稳）
   enable_zupt: true                    # 静止确认后是否给优化窗口加零速伪观测
   zupt_velocity_std: 0.02              # 零速伪观测的速度标准差（m/s）
   runtime_window_s: 1.5                # 运行时静止检测的滚动窗口时长（s）；单个关键帧间隔
                                        # 太短磨不平高频振动噪声，窗口拉长才有意义
-  init_window_s: 0.2                   # Initializer 用重定位初始化时单个视觉观测窗口时长（s）；
-                                        # 凑够才检查窗口内有无一次成功 reloc，和 runtime_window_s
+  init_window_s: 0.2                   # Initializer 初始化时单个视觉观测窗口时长（s）；
+                                        # 凑够后才检查初始化条件，和 runtime_window_s
                                         # （运行时滚动窗口）是两个独立维度，不要混用
   std_smoothing_window: 5               # 算标准差前先做非重叠滑动平均的块大小（采样点数），
                                        # 1 表示不平滑；简单的低通滤波，压高频振动/电磁噪声

@@ -88,7 +88,7 @@ void MsfIvpsGrabber::channelGrabLoop(IVPS_GRP grp, IVPS_CHN chn, RawSynchronizer
     constexpr int kFdRetryLogEvery = 25;  // 每 ~5s 打一次日志，避免刷屏
     constexpr int kEpollTimeoutMs = 50;
 
-    // ## 通道可能在节点启动时还没建好（相机管线晚起、reloc 通道长期未使能等），
+    // ## 通道可能在节点启动时还没建好（相机管线晚起等），
     // ## 与旧的 wall-timer 抓流路径行为一致：无限期重试，不因为一时拿不到 fd 就
     // ## 让这一路永久停摆，只有收到 stop_requested_ 才退出
     int fd = -1;
@@ -209,47 +209,7 @@ IvpsFramePtr MsfIvpsGrabber::convertToGray(const RawMsfFramePtr& raw)
  * @brief NV12 -> RGB888：走 IVPS 硬件 CSC（AX_IVPS_CscVgp）做色彩空间转换，不缩放，
  *        写入新申请的独立物理内存。
  */
-IvpsFramePtr MsfIvpsGrabber::convertToRgb(const RawMsfFramePtr& raw)
-{
-    const AX_VIDEO_FRAME_T& frame = raw->frame();
-    if (frame.u64PhyAddr[0] == 0 || frame.u32Width == 0 || frame.u32Height == 0) {
-        return nullptr;
-    }
-
-    auto dst = std::make_shared<IvpsFrameHandle>();
-    const AX_U32 dst_stride = frame.u32Width * 3;
-    if (!dst->alloc(frame.u32Width, frame.u32Height, dst_stride, AX_FORMAT_RGB888)) {
-        return nullptr;
-    }
-
-    AX_VIDEO_FRAME_T dst_frame{};
-    dst_frame.u64PhyAddr[0] = dst->phy();
-    dst_frame.u64VirAddr[0] = reinterpret_cast<AX_U64>(dst->vir());
-    dst_frame.u32Width = dst->width();
-    dst_frame.u32Height = dst->height();
-    dst_frame.enImgFormat = AX_FORMAT_RGB888;
-    dst_frame.stDynamicRange = AX_DYNAMIC_RANGE_SDR8;
-    dst_frame.u32PicStride[0] = dst->stride();
-    dst_frame.u32FrameSize = dst->size();
-
-    const int ret = AX_IVPS_CscVgp(&frame, &dst_frame);
-    if (ret != 0) {
-        MSF_ELOG << "[IVPS] AX_IVPS_CscVgp (rgb) failed, ret=0x" << std::hex << ret << std::dec
-                 << "\n";
-        return nullptr;
-    }
-    AX_SYS_MinvalidateCache(dst->phy(), dst->vir(), dst->size());
-    dst->setPtsUs(frame.u64PTS);
-
-    return dst;
-}
-
-/**
- * @brief 左右图配对成功：NV12 -> YUV400 组成 tracking 图像；reloc 图像现在和
- *        tracking 图像来自同一次同步配对，天然对齐到同一关键帧，不需要再像以前
- *        那样单独抓一路、缓存最近一次结果再按时间窗口补偿。needRelocColorImages()
- *        为假时直接跳过 RGB888 转换，避免无意义的硬件 CSC 调用。
- */
+/** @brief 左右图配对成功：NV12 -> YUV400 组成 tracking 图像。 */
 void MsfIvpsGrabber::onPairMatched(const RawMsfFramePtr& left, const RawMsfFramePtr& right)
 {
     const auto acquire_begin = MonotonicRawClock::now();
@@ -273,17 +233,6 @@ void MsfIvpsGrabber::onPairMatched(const RawMsfFramePtr& left, const RawMsfFrame
     // ## 摄像头管线出图正常，不依赖显示器。toCvMatCopy() 的深拷贝被推迟到函数内部
     // ## 的"仅一次"CAS 抢占成功之后才做，调用点每帧只传句柄，不产生额外拷贝。
     msf_ivps_save_first_frame_if_needed(image_message.image0, image_message.image1);
-
-    if (MsFusionManager::SnglPtr()->needRelocColorImages()) {
-        IvpsFramePtr reloc_left = convertToRgb(left);
-        IvpsFramePtr reloc_right = convertToRgb(right);
-        if (reloc_left && reloc_right) {
-            msf_ivps_save_first_reloc_frame_if_needed(reloc_left, reloc_right);
-            image_message.reloc_image0 = std::move(reloc_left);
-            image_message.reloc_image1 = std::move(reloc_right);
-            image_message.has_reloc_images = true;
-        }
-    }
 
     ImageCallback cb;
     {

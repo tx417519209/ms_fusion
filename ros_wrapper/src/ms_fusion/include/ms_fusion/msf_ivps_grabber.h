@@ -25,10 +25,7 @@ namespace ms_fusion {
 /**
  * @brief IVPS 取流类：左右两路各由一个独立线程常驻抓取 NV12 原始帧，互不等待、
  *        互不阻塞；抓图结果送进 FrameSynchronizer 做时间戳配对，配对成功后按需
- *        转换成 YUV400（tracking，始终需要）和 RGB888（reloc，仅
- *        MsFusionManager::needRelocColorImages() 为真时才转换），通过回调交给
- *        上层。reloc 图像现在和 tracking 图像来自同一次同步配对，天然对齐到同
- *        一关键帧，不再需要单独的抓图线程/同步器/时间窗口缓存补偿。
+ *        转换成 YUV400 tracking 图像，通过回调交给上层。
  */
 class MsfIvpsGrabber {
     using RawSynchronizer = FrameSynchronizer<RawMsfFrame, RawMsfFrame>;
@@ -61,7 +58,6 @@ private:
     // ## 硬件拷贝到新申请的独立物理内存、格式标成 YUV400，不需要真正的色彩空间转换
     static IvpsFramePtr convertToGray(const RawMsfFramePtr& raw);
     // ## NV12 -> RGB888：走 IVPS 硬件 CSC（AX_IVPS_CscVgp）做色彩空间转换，不缩放
-    static IvpsFramePtr convertToRgb(const RawMsfFramePtr& raw);
 
 private:
     std::thread capture_left_thread_;

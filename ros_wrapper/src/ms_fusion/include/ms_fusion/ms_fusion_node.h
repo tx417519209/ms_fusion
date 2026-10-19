@@ -108,25 +108,11 @@ private:
     void rtkCalibrateCallback(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
                               std::shared_ptr<std_srvs::srv::Trigger::Response> response);
 
-    // /reloc：触发一次视觉重定位；Loop 开启时修正最终输出，关闭时对齐后端
-    void relocCallback(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
-                       std::shared_ptr<std_srvs::srv::Trigger::Response> response);
-
-    // Loop 开启时发布同一时刻的 raw/target base_link 位姿；周期重定位
-    // 触发、或 /reloc 手动触发都经这一个回调（msf_core 注册，见 initSubAndPub）
-    void publishRelocCorrection(const RelocPoseResult& result);
-    // Loop 对 reloc 修正的 ACK（[request_id, stamp_sec, stamp_nanosec, status, reason]），
-    // 转给 msf_core，见 pose_graph_node.cpp::publishRelocAck
-    void relocAckCallback(const std_msgs::msg::UInt64MultiArray::SharedPtr msg);
-
     // 发布 XFeat 关键点可视化图像
     void pubXfeatKeypointsImage(const DebugImageMessage& debug_image);
 
     // 发布 SuperPoint 特征跟踪可视化图像
     void pubVisionDebugImage(const DebugImageMessage& debug_image);
-
-    // 发布 YOLO-OBB reloc 线段与关键点可视化图像
-    void pubRelocDebugImage(const DebugImageMessage& debug_image);
 
     // 发布左目 t-1→t 时间跟踪可视化图像
     void pubTemporalTrackingImage(const DebugImageMessage& debug_image);
@@ -199,9 +185,6 @@ private:
     // SuperPoint 特征跟踪可视化
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_vision_debug_;
 
-    // YOLO-OBB reloc 可视化
-    rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_reloc_debug_;
-
     // 左目 t-1→t 时间跟踪可视化（tracking.publish_temporal_tracking_debug=true 时创建）
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_temporal_tracking_;
 
@@ -215,16 +198,12 @@ private:
         std::string keyframe_point_topic = "ms_fusion/keyframe_point";
         std::string keyframe_descriptors_topic = "ms_fusion/keyframe_descriptors";
         std::string extrinsic_topic = "ms_fusion/extrinsic";
-        std::string reloc_correction_topic = "ms_fusion/reloc_correction";
     };
     KeyframeLoopPubConfig keyframe_loop_cfg_;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_keyframe_pose_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud>::SharedPtr pub_keyframe_point_;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_keyframe_descriptors_;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_keyframe_extrinsic_;
-    // reloc 绝对修正（周期重定位触发、或 /reloc 手动触发，loop.enable=true 时）
-    rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr pub_reloc_correction_;
-    rclcpp::Subscription<std_msgs::msg::UInt64MultiArray>::SharedPtr sub_reloc_ack_;
 
     // matched_point_cloud（VSLAM 位姿 × LaserScan，对齐 cartographer 话题）
     MatchedCloudConfig matched_cloud_cfg_;
@@ -239,8 +218,6 @@ private:
 
     // /rtk_calibrate：直接改写融合后端位姿
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr rtk_calibrate_srv_;
-    // /reloc：on-demand 视觉重定位
-    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reloc_srv_;
 
     // world→base_link TF：统一 CLOCK_MONOTONIC_RAW（与传感器/定位时间戳一致）
     void publishWorldBaseTf(const geometry_msgs::msg::Transform& transform,
