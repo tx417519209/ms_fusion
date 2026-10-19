@@ -170,7 +170,7 @@ void MsFusionConfigParams::loadConfigFromYAML(const std::string config_file) {
             !tracking_config_params_.lightglue_model_path.empty()) {
 #ifdef USE_ONNX
             selectOnnxModel(tracking_config_params_.lightglue_model_path,
-                            "lightglue_top256_640_384_clip15_scoreclip.onnx", config_file);
+                            "lightglue_top256_640_384_clip15.onnx", config_file);
 #endif
             resolvePathRelativeToConfigFile(
                 tracking_config_params_.lightglue_model_path, config_file);

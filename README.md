@@ -36,13 +36,15 @@
 
 请在决定使用前确认：
 
-1. **强依赖 Axera AX650N NPU 与其 SDK，不能在普通 PC 上直接运行。**
-   - 前端只支持 `xfeat` / `superpoint` 两种检测器，FAST/KLT 路径已移除；它们的推理和 LightGlue 匹配只有 Axera NPU 实现
-     （`.axmodel` 模型，运行库来自板端 `/soc/lib/libax_*.so`）。
-   - 把 `MSF_USE_AXERA_SUPERPOINT` 设为 `OFF` 虽然能通过编译，但运行时检测器初始化会直接失败（`BUILD_DISABLED`），无法产生特征。
+1. **板端推理强依赖 Axera AX650N NPU 与其 SDK；PC 上只能走 x86 CPU（ONNX Runtime）路径。**
+   - 前端只支持 `xfeat` / `superpoint` 两种检测器，FAST/KLT 路径已移除。NPU 路径使用 `.axmodel` 模型，
+     运行库来自板端 `/soc/lib/libax_*.so`。
+   - 在 x86 PC 上请用 `scripts/build_ms_fusion_x86.sh`（`USE_ONNX=ON`），见「编译 → x86 CPU（ONNX Runtime）构建」。
+     该路径目前只实现了 **XFeat + LightGlue**，不支持 SuperPoint；CPU 推理比 NPU 慢，回放评测无法保证实时。
    - `scripts/run_colcon_build_onnx.sh`、`install_onnxruntime*.sh` 是早期 ONNX Runtime 后端的遗留脚本，
-     当前 CMake 已不再提供对应的 `MSF_INFER_BACKEND` 选项，**不要依赖它们**。
-   - 因此「离线回放评测」也要在 AX650N 板端（或能访问 NPU 的环境）上执行，离线构建只是把输入从 IVPS 换成了 ROS 话题。
+     当前 CMake 已不再提供对应的 `MSF_INFER_BACKEND` 选项，**不要依赖它们**；x86 请使用 `build_ms_fusion_x86.sh`。
+   - 既不开 NPU（`MSF_USE_AXERA_SUPERPOINT=OFF`）也不开 `USE_ONNX` 时虽然能通过编译，但运行时检测器初始化会直接失败（`BUILD_DISABLED`），无法产生特征。
+   - 板端「离线回放评测」要在 AX650N 板端（或能访问 NPU 的环境）上执行，离线构建只是把输入从 IVPS 换成了 ROS 话题。
 2. **仅支持双目 + IMU**，不支持单目、RGB-D；相机模型仅 `pinhole-radtan4/5`，鱼眼数据需要先去畸变。
 3. **使用门槛偏高**：板端交叉编译 / qemu 下编译耗时长（脚本里限制了并行度防止内存不足）；
    回环词典需要用目标场景图像自行训练。
@@ -101,7 +103,7 @@ bash scripts/run_offline_eval.sh tumvi_room1
 ### 环境要求
 
 - Ubuntu 22.04 + ROS 2 Humble、`colcon`、CMake ≥ 3.16、支持 C++20 的编译器
-- 依赖库：Eigen3、OpenCV、Ceres、TBB、yaml-cpp、LAPACK/BLAS、fmt、spdlog
+- 依赖库：Eigen3、OpenCV、Ceres（需 ≥ 2.1，代码使用 `ceres::Manifold`）、TBB、yaml-cpp、LAPACK/BLAS、fmt、spdlog
 - 特征提取与匹配使用 Axera NPU（`MSF_USE_AXERA_SUPERPOINT`），需要 AX650 板端环境
   （`/soc/lib/libax_engine.so` 等）或对应交叉编译环境；CMake 在板端会自动探测并开启
 
@@ -121,11 +123,38 @@ bash scripts/build_ms_fusion_offline.sh
 两个脚本都固定 `CMAKE_BUILD_TYPE=Release`，构建 `msf_core`、`ms_fusion`、`ms_fusion_loop` 三个包，
 可在末尾追加额外的 `--cmake-args`。`PACK=1` 会额外打包 `install/`。
 
+### x86 CPU（ONNX Runtime）构建
+
+没有 AX650N 板时，可以在 x86_64 PC 上用 CPU 推理 XFeat + LightGlue 跑通整条 VIO 流程（适合开发调试与精度对比，不保证实时）。
+
+```bash
+# 系统依赖（Ubuntu 22.04）。Ceres 与 ONNX Runtime 已随仓库放在 third_party/，不需要 apt 安装
+sudo apt install -y libgoogle-glog-dev libgflags-dev libeigen3-dev libsuitesparse-dev \
+    libopencv-dev libtbb-dev libyaml-cpp-dev libfmt-dev libspdlog-dev liblapack-dev
+
+# 在工作空间根目录执行；不要使用 --symlink-install
+bash scripts/build_ms_fusion_x86.sh            # 可在末尾追加额外的 --cmake-args
+source install/setup.bash
+```
+
+- **第三方库**：`third_party/ceres/x86_64` 是预编译的 Ceres 2.2.0（Ubuntu 22.04 的 `libceres-dev` 只有 2.0，缺少 `ceres::Manifold`），
+  `third_party/onnxruntime` 是 ONNX Runtime 1.23.2（CPU）及 XFeat / LightGlue 的 `.onnx` 模型。
+  `libonnxruntime.so` 会随 `libmsf_core.so` 装进 `install/msf_core/lib`，无需额外设置 `LD_LIBRARY_PATH`。
+- **配置沿用板端 yaml**：`xfeat.model_path`、`lightglue_model_path` 仍写 `.axmodel`，`USE_ONNX` 下会自动换成对应的 `.onnx`
+  （先找 yaml 所在目录的 `../models/`，找不到再退回 `third_party/onnxruntime/models/`）。
+- **LightGlue 约束**：ONNX 模型固定 256 个关键点，必须 `tracking.max_num_features: 256`，否则初始化失败并回退到 MNN 匹配。
+- **回放评测**：x86 上不能用 `run_offline_eval.sh` 里的板端部署流程，按「测试 → TUM VI 回放评测」的手动三终端方式
+  （节点 + `tumvie_eval_trajectory.py record` + `tumvie_replay_node.py`）。同一网络里若有别的机器也在发 `/odometry_vio`，
+  录到的轨迹会混入对方数据，请先 `export ROS_DOMAIN_ID=<独占编号> ROS_LOCALHOST_ONLY=1`。
+- 相关 CMake 选项：`USE_ONNX`（与 `MSF_USE_AXERA_SUPERPOINT` 互斥）、`MSF_USE_VENDORED_CERES`（默认 ON，且仅当 `third_party/ceres/<CPU架构>` 存在时生效；
+  设为 OFF 则使用系统 Ceres，需 ≥ 2.1）。
+
 主要 CMake 选项：
 
 | 选项 | 说明 |
 |------|------|
 | `MSF_USE_AXERA_SUPERPOINT` | 启用 Axera NPU 特征检测/匹配，板端默认 ON |
+| `USE_ONNX` | x86 CPU 路径：用 ONNX Runtime 推理 XFeat / LightGlue，默认 OFF；与 `MSF_USE_AXERA_SUPERPOINT` 互斥 |
 | `MSF_USE_AXERA_IVPS` | 启用 IVPS 零拷贝取图；**`msf_core`、`ms_fusion`、`ms_fusion_loop` 必须一致**（它改变 `ImageMessage` 的内存布局） |
 | `MSF_BUILD_LOOP_TOOLS` | 构建词典采集/训练工具（见 `ros_wrapper/src/ms_fusion_loop/tools/README.md`） |
 | `MSF_CORE_USE_PCH` / `MSF_USE_PCH` | 预编译头，默认 ON |
