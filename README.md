@@ -1,11 +1,11 @@
 # MS Fusion
 
 面向 Axera AX650 NPU 板端实时运行的 **双目 + IMU 视觉惯性里程计（VIO）**，ROS 2（Humble）工作空间，
-可选轮速里程计和回环（位姿图）。
+可选轮速里程计和回环（位姿图）。没有板子时也可以在 x86 PC 上用 ONNX Runtime（CPU）跑通整条流程，用于开发调试和精度评测（不保证实时）。
 
 ## 特点
 
-- **学习型前端**：XFeat / SuperPoint 特征 + LightGlue 描述子匹配，推理跑在 AX650 NPU 上；
+- **学习型前端**：XFeat / SuperPoint 特征 + LightGlue 描述子匹配，推理跑在 AX650 NPU 上（`.axmodel`），或在 x86 CPU 上用 ONNX Runtime（目前仅 XFeat + LightGlue）；
   左目跨帧（temporal）和左右目同帧（stereo）两路匹配，之后叠加运动范围门控、对极约束 / RANSAC 过滤外点。
 - **IMU 滑窗优化**：IMU 预积分 + Ceres 滑窗（边缘化）联合优化，关键帧按间隔、视差、匹配数自适应触发。
 - **静止检测与零速更新**：基于 IMU 统计量的静止判定，支持 ZUPT；初始化支持静止对准。
@@ -22,8 +22,8 @@
 
 适合你的情况：
 
-- **目标平台就是 Axera AX650N 板**（或同类 Axera SoC），需要在板端实时跑学习型特征 VIO，
-  而不是在 PC 上跑离线算法。特征提取、匹配、取图都已经接好 NPU / IVPS，并做了零拷贝取图和 NPU 亲和性绑定。
+- **主要目标平台是 Axera AX650N 板**（或同类 Axera SoC），需要在板端实时跑学习型特征 VIO。
+  没有板子时可用 x86 + ONNX Runtime 路径做开发调试和公开数据集精度评测，但 CPU 推理不保证实时。特征提取、匹配、取图都已经接好 NPU / IVPS，并做了零拷贝取图和 NPU 亲和性绑定。
 - 需要**学习型特征（XFeat / SuperPoint + LightGlue）**带来的弱纹理、光照变化鲁棒性，同时仍保持 IMU 紧耦合滑窗优化。
 - 需要在 VIO 之上叠加**轮速、回环**这些工程化能力，且都能用同一份 yaml 开关。
 - 想要一套**可复现的公开数据集评测流程**：TUM VI 的下载、预处理、回放、ATE 评估脚本齐全，
@@ -60,7 +60,11 @@
 
 ## 快速上手（clone 之后怎么跑起来）
 
-前提：一块能访问 NPU 的 AX650N 板（或板端容器），已装 ROS 2 Humble 与依赖库（见「编译 → 环境要求」）。
+前提：已装 ROS 2 Humble 与依赖库（见「编译 → 环境要求」），并满足下面任一条件：
+
+- 一块能访问 NPU 的 AX650N 板（或板端容器），按下面的步骤构建；
+- 没有板子：在 x86_64 PC 上改用 `scripts/build_ms_fusion_x86.sh` 构建（ONNX Runtime CPU，见「编译 → x86 CPU（ONNX Runtime）构建」），
+  回放评测按该节说明手动运行。
 
 ```bash
 # 1. 获取代码（默认流程所需的 XFeat / LightGlue 模型已在仓库里）
@@ -82,7 +86,7 @@ bash scripts/run_offline_eval.sh tumvi_room1
 ```
 
 跑通的判断标准：`statistics/` 下生成 `*_vio_est.tum` 轨迹与日志，`tumvie_eval_trajectory.py eval` 能输出 ATE。
-没有板子的话，到「编译」这一步之外都无法验证，请先确认硬件条件。
+x86 + ONNX 路径同样能产出轨迹并计算 ATE，但速度比 NPU 慢，回放评测无法保证实时。
 
 ## 目录结构
 
@@ -104,8 +108,9 @@ bash scripts/run_offline_eval.sh tumvi_room1
 
 - Ubuntu 22.04 + ROS 2 Humble、`colcon`、CMake ≥ 3.16、支持 C++20 的编译器
 - 依赖库：Eigen3、OpenCV、Ceres（需 ≥ 2.1，代码使用 `ceres::Manifold`）、TBB、yaml-cpp、LAPACK/BLAS、fmt、spdlog
-- 特征提取与匹配使用 Axera NPU（`MSF_USE_AXERA_SUPERPOINT`），需要 AX650 板端环境
-  （`/soc/lib/libax_engine.so` 等）或对应交叉编译环境；CMake 在板端会自动探测并开启
+- 特征提取与匹配二选一：Axera NPU（`MSF_USE_AXERA_SUPERPOINT`），需要 AX650 板端环境
+  （`/soc/lib/libax_engine.so` 等）或对应交叉编译环境，CMake 在板端会自动探测并开启；
+  或 x86 CPU 的 ONNX Runtime（`USE_ONNX`），不需要任何 Axera SDK，见下文「x86 CPU（ONNX Runtime）构建」
 
 ### 构建
 
